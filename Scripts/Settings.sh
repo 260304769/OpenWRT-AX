@@ -19,7 +19,7 @@ sed -i "s/(\(luciversion || ''\))/(\1) + (' \/ $WRT_MARK-$WRT_DATE')/g" $(find .
 
 #==================== 2. 清理固件内置多余编译时间戳 ====================
 clean_version_timestamp() {
-    local release="$BUILD_DIR/package/base-files/files/etc/openwrt_release"
+    local release="./package/base-files/files/etc/openwrt_release"
     sed -i 's/ \/ [0-9]*-[0-9\.]*-[0-9\.]* \/ [0-9]*-[0-9\.]*-[0-9\.]*//g' "$release" 2>/dev/null || true
     green "固件版本多余时间戳清理完毕"
 }
@@ -27,7 +27,7 @@ clean_version_timestamp
 
 #==================== 3. NSS PBUF 性能调度优化（IPQ高通NSS专用） ====================
 update_nss_pbuf_performance() {
-    local conf="$BUILD_DIR/package/kernel/mac80211/files/pbuf.uci"
+    local conf="./package/kernel/mac80211/files/pbuf.uci"
     sed -i "s/auto_scale '1'/auto_scale 'off'/g; s/scaling_governor 'performance'/scaling_governor 'schedutil'/g" "$conf" 2>/dev/null || true
     green "NSS PBUF: 自动缩放关闭，CPU调度器切换 schedutil"
 }
@@ -35,7 +35,7 @@ update_nss_pbuf_performance
 
 #==================== 4. NSS 延迟卸载修复脚本，后台休眠不阻塞开机 ====================
 install_nss_fix() {
-    local init_path="$BUILD_DIR/package/base-files/files/etc/init.d/nss-fix"
+    local init_path="./package/base-files/files/etc/init.d/nss-fix"
     mkdir -p "$(dirname "$init_path")"
     cat > "$init_path" << 'EOF'
 #!/bin/sh /etc/rc.common
