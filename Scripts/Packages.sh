@@ -30,9 +30,8 @@ UPDATE_PACKAGE() {
 		fi
 	done
 
-	# 代理加速克隆github，解决国内访问失败
-	local GIT_URL="https://mirror.ghproxy.com/https://github.com/$PKG_REPO.git"
-	git clone --depth=1 --single-branch --branch $PKG_BRANCH "$GIT_URL"
+	# 克隆 GitHub 仓库
+	git clone --depth=1 --single-branch --branch $PKG_BRANCH "https://github.com/$PKG_REPO.git"
 
 	# 处理克隆的仓库
 	if [[ "$PKG_SPECIAL" == "pkg" ]]; then
@@ -51,20 +50,8 @@ UPDATE_PACKAGE "aurora-config" "eamonxg/luci-app-aurora-config" "master"
 UPDATE_PACKAGE "kucat" "sirpdboy/luci-theme-kucat" "master"
 UPDATE_PACKAGE "kucat-config" "sirpdboy/luci-app-kucat-config" "master"
 
-# ===================== AdGuardHome 广告过滤 =====================
-UPDATE_PACKAGE "adguardhome" "sbwml/luci-app-adguardhome" "main" "" "adg adguard"
-
-# ===================== ZeroTier 异地组网 =====================
-UPDATE_PACKAGE "zerotier" "sbwml/luci-app-zerotier" "main" "" "zt zerotier"
-
-# ===================== OAF 应用过滤家长控制 =====================
-UPDATE_PACKAGE "OpenAppFilter" "destan19/OpenAppFilter" "master" "" "oaf appfilter luci-app-oaf"
-
-# ===================== 基础家用工具（移除gecoosac） =====================
-UPDATE_PACKAGE "netwizard" "sirpdboy/luci-app-netwizard" "main"
+# ===================== 仅保留基础家用工具 =====================
 UPDATE_PACKAGE "timecontrol" "sirpdboy/luci-app-timecontrol" "main"
-# 仅保留 wolplus、timewol，删掉gecoosac
-UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "luci-app-timewol luci-app-wolplus"
 
 #引入私有扩展脚本
 if [ -f "$GITHUB_WORKSPACE/Scripts/PRIVATE.sh" ]; then
