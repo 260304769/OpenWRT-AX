@@ -2,10 +2,7 @@
 CONFIG_PACKAGE_luci-app-autoreboot=y
 CONFIG_PACKAGE_luci-app-upnp=y
 CONFIG_PACKAGE_luci-app-wolplus=y
-# AdGuardHome全屋广告过滤
-CONFIG_PACKAGE_luci-app-adguardhome=y
-CONFIG_PACKAGE_adguardhome=y
-CONFIG_ADGUARDHOME_UPX_COMPRESS=y
+
 # 新增 ZeroTier 异地组网
 CONFIG_PACKAGE_luci-app-zerotier=y
 CONFIG_PACKAGE_zerotier=y
@@ -28,8 +25,11 @@ CONFIG_PACKAGE_autocore=y
 CONFIG_PACKAGE_coremark=y
 CONFIG_PACKAGE_cpufreq=y
 CONFIG_PACKAGE_curl=y
-# ADG+ZeroTier 公共依赖
+# ZeroTier 公共依赖
 CONFIG_PACKAGE_jq=y
 CONFIG_PACKAGE_xz=y
 CONFIG_PACKAGE_uclibcxx=y
 CONFIG_PACKAGE_libstdcpp=y
+CONFIG_PACKAGE_luci-app-oaf=y
+CONFIG_PACKAGE_open-app-filter=y
+CONFIG_PACKAGE_kmod-oaf=y
