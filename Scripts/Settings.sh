@@ -43,16 +43,20 @@ START=100
 STOP=10
 boot() { start; }
 start() {
-    # 后台异步休眠，不阻塞系统开机流程
-    sleep 180 &
-    rmmod ifb 2>/dev/null || true
-    rmmod qca-nss-ecm-offload 2>/dev/null || true
+    # 全部延时逻辑放入后台子shell，等待500秒再卸载模块，不阻塞开机
+    (
+        sleep 500
+        # 仅模块存在时卸载，彻底屏蔽不存在的报错输出
+        lsmod | grep -q "^ifb " && rmmod ifb
+        lsmod | grep -q "qca_nss_ecm_offload" && rmmod qca-nss-ecm-offload
+    ) &
 }
 EOF
     chmod +x "$init_path"
-    green "NSS延迟卸载脚本安装完成，180s后台异步清理，不拖慢开机"
+    green "NSS延迟卸载脚本安装完成，开机8分20秒后后台自动清理NSS模块，不拖慢开机"
 }
 install_nss_fix
+
 
 #==================== 5. 固化WiFi参数（SSID、密码、CN地区、加密） ====================
 WIFI_SH=$(find ./target/linux/{mediatek/filogic,qualcommax}/base-files/etc/uci-defaults/ -type f -name "*set-wireless.sh" 2>/dev/null)
