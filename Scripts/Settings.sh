@@ -7,6 +7,42 @@ green() {
     echo -e "\033[32m$1\033[0m"
 }
 
+#==================== 新增模块：删除全部无线/NSS冲突内核包（适配IPQ6018 AX5） ====================
+clean_conflict_packages() {
+    local config_file="./.config"
+    green "===== 开始清理NSS/WiFi冲突插件 ====="
+    # 1. WiFi Mesh双重调度冲突 头号元凶
+    sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-wifi-meshmgr/d' "$config_file"
+    # 2. 系统原生隧道模块，与NSS内置隧道驱动冲突
+    sed -i '/CONFIG_PACKAGE_kmod-6rd/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-gre/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-gre6/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-l2tp/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-iptunnel/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-iptunnel4/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-iptunnel6/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-vxlan/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-udptunnel4/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-udptunnel6/d' "$config_file"
+    # 3. nft硬件卸载 和 NSS ECM NAT冲突
+    sed -i '/CONFIG_PACKAGE_kmod-nft-offload/d' "$config_file"
+    # 4. IPv6双DHCP服务地址分配冲突
+    sed -i '/CONFIG_PACKAGE_odhcpd-ipv6only/d' "$config_file"
+    # 5. 仅删除网络自检内核模块，保留coremark、iperf3测速工具
+    sed -i '/CONFIG_PACKAGE_kmod-net-selftests/d' "$config_file"
+    green "冲突模块清理完成，消除wifi-scripts与NSS驱动抢占问题（保留coremark/iperf3）"
+}
+
+#==================== 新增模块：wifi-scripts补丁，重载完整卸载ath11k驱动（解决5G消失） ====================
+patch_wifi_full_reload() {
+    local wifi_uc="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
+    if [ -f "$wifi_uc" ]; then
+        # 在wifi停止函数末尾追加ath11k全套驱动卸载逻辑
+        sed -i '/ubus call network.wireless stop/a\    exec("rmmod kmod-ath11k-pci kmod-ath11k-ahb kmod-ath11k kmod-ath kmod-mac80211 kmod-cfg80211; sleep(1); modprobe kmod-cfg80211; modprobe kmod-mac80211; modprobe kmod-ath; modprobe kmod-ath11k; modprobe kmod-ath11k-ahb; modprobe kmod-ath11k-pci; sleep(1);");' "$wifi_uc"
+        green "wifi-scripts补丁注入成功：wifi reload时完整重置ath11k无线固件"
+    fi
+}
+
 #==================== 1. 清理在线升级、全局默认主题替换 ====================
 #移除luci-app-attendedsysupgrade
 sed -i "/attendedsysupgrade/d" $(find ./feeds/luci/collections/ -type f -name "Makefile")
@@ -56,7 +92,6 @@ EOF
     green "NSS延迟卸载脚本安装完成，开机8分20秒后后台自动清理NSS模块，不拖慢开机"
 }
 install_nss_fix
-
 
 #==================== 5. 固化WiFi参数（SSID、密码、CN地区、加密） ====================
 WIFI_SH=$(find ./target/linux/{mediatek/filogic,qualcommax}/base-files/etc/uci-defaults/ -type f -name "*set-wireless.sh" 2>/dev/null)
@@ -117,3 +152,9 @@ if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]]; then
 		echo "qualcommax set up nowifi successfully!"
 	fi
 fi
+
+#==================== 执行冲突清理 + WiFi底层补丁 ====================
+clean_conflict_packages
+patch_wifi_full_reload
+
+green "===== 全部预配置脚本执行完毕，已消除WiFi/NSS模块冲突 ====="
