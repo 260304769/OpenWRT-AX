@@ -4,7 +4,7 @@
 name: Cache-Clean
 
 on:
-  #自动清理：每周一早上4点
+  #自动清理：每周日20点（原cron 0 20 * * 0 周日晚8点）
   schedule:
     - cron: 0 20 * * 0
   #手动清理
@@ -23,4 +23,13 @@ jobs:
         uses: actions/checkout@main
 
       - name: Cache Clean
-        run: gh cache delete --all
+        run: |
+          # 获取全部缓存ID
+          CACHE_ITEMS=$(gh cache list --limit 1000 | cut -f1)
+          if [ -n "$CACHE_ITEMS" ]; then
+            echo "找到缓存，开始清理..."
+            echo "$CACHE_ITEMS" | xargs -I {} gh cache delete {}
+            echo "所有缓存清理完成"
+          else
+            echo "仓库无缓存，跳过删除操作"
+          fi
