@@ -43,6 +43,10 @@ on:
       WRT_TEST:
         required: false
         type: string
+      repo_url:
+        required: false
+        type: string
+        default: ''
 
 env:
   GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
@@ -191,6 +195,15 @@ jobs:
 
           make -j$(nproc) || make -j1 V=s
 
+      - name: Calculate Build Time
+        if: env.WRT_TEST != 'true'
+        run: |
+          END_TIME=$(date +%s)
+          ELAPSED=$((END_TIME - START_TIME))
+          MINUTES=$((ELAPSED / 60))
+          SECONDS=$((ELAPSED % 60))
+          echo "BUILD_TIME=${MINUTES}分${SECONDS}秒" >> $GITHUB_ENV
+
       - name: Machine Information
         run: |
           cd ./wrt/
@@ -207,22 +220,18 @@ jobs:
         run: |
           cd ./wrt/ && mkdir ./upload/
 
-          # 计算编译总耗时
-          END_TIME=$(date +%s)
-          ELAPSED=$((END_TIME - START_TIME))
-          ELAPSED_MIN=$((ELAPSED / 60))
-          ELAPSED_SEC=$((ELAPSED % 60))
-          echo "COMPILE_TIME=${ELAPSED_MIN}分${ELAPSED_SEC}秒" >> $GITHUB_ENV
-
-          # 提取源码版本信息（最后一次提交记录）
-          VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
-          echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
-
           cp -f ./.config ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
 
           if [[ $WRT_TEST != 'true' ]]; then
             echo "WRT_KVER=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^kernel - \K[\d\.]+' {} \;)" >> $GITHUB_ENV
             echo "WRT_LIST=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | tr '\n' ' ')" >> $GITHUB_ENV
+
+            # 获取版本信息
+            cd ./wrt/
+            echo "VERSION_INFO<<EOF" >> $GITHUB_ENV
+            echo "$(git show -s --date=short --format="**作者**: %an  \n**时间**: %cd  \n**内容**: %s  \n**Hash**: %H")" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+            cd -
 
             find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
 
@@ -244,28 +253,63 @@ jobs:
           tag_name: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}
           files: ./wrt/upload/*.*
           body: |
-            ## 固件信息
+            ## 🎯 固件发布
 
-            源码：${{env.WRT_REPO}}
-            分支：${{env.WRT_BRANCH}}
-            提交：${{env.WRT_HASH}}
+            ---
 
-            配置：${{env.WRT_CONFIG}}
-            平台：${{env.WRT_TARGET}}
+            ### 📌 基本信息
 
-            登录地址：${{env.WRT_IP}}
-            登录密码：${{env.WRT_PW}}
+            | 项目 | 详情 |
+            |:-----|:-----|
+            | 🏗️ **源码** | [${{env.WRT_REPO}}](${{env.WRT_REPO}}) |
+            | 🌿 **分支** | `${{env.WRT_BRANCH}}` |
+            | 🔖 **提交** | `${{env.WRT_HASH}}` |
+            | ⚙️ **配置** | `${{env.WRT_CONFIG}}` |
+            | 🖥️ **平台** | `${{env.WRT_TARGET}}` |
+            | 🧠 **内核** | `${{env.WRT_KVER}}` |
+            | ⏱️ **编译耗时** | `${{env.BUILD_TIME}}` |
 
-            WIFI名称：${{env.WRT_SSID}}
-            WIFI密码：${{env.WRT_WORD}}
+            ---
 
-            内核版本：${{env.WRT_KVER}}
-            插件列表：${{env.WRT_LIST}}
+            ### 🌐 网络配置
 
-            ## 编译信息
+            | 项目 | 详情 |
+            |:-----|:-----|
+            | 🌍 **管理地址** | http://${{env.WRT_IP}} |
+            | 🔑 **登录密码** | `${{env.WRT_PW}}` |
+            | 📶 **Wi-Fi SSID** | `${{env.WRT_SSID}}` |
+            | 🔒 **Wi-Fi 密码** | `${{env.WRT_WORD}}` |
 
-            编译总耗时：${{env.COMPILE_TIME}}
+            ---
 
-            ## 源码更新记录
+            ### 📦 内置插件列表
 
-            ${{env.VERSION_INFO}}
+            ```
+            ${{env.WRT_LIST}}
+            ```
+
+            ---
+
+            ### 📝 更新日志
+
+            > **主源码最后一次更新**
+            > 
+            > ${{env.VERSION_INFO}}
+
+            ---
+
+            ### ⚠️ 注意事项
+
+            - 刷机前请**备份**当前配置
+            - 默认IP可能因网络环境变化需要手动修改
+            - 首次启动建议**恢复出厂设置**
+
+            ---
+
+            ### 📊 编译信息
+
+            - **编译时间**: ${{env.WRT_DATE}}
+            - **固件标识**: ${{env.WRT_MARK}}/${{env.WRT_INFO}}
+            - **Wi-Fi 状态**: ${{env.WRT_WIFI}}
+
+            > 💡 如有问题，请提交 [Issue](https://github.com/${{github.repository}}/issues)
