@@ -95,6 +95,7 @@ jobs:
           echo "WRT_WIFI=wifi-yes" >> $GITHUB_ENV
           echo "WRT_KVER=none" >> $GITHUB_ENV
           echo "WRT_LIST=none" >> $GITHUB_ENV
+          echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
 
       - name: Clone Code
         run: |
@@ -206,6 +207,21 @@ jobs:
         run: |
           cd ./wrt/ && mkdir ./upload/
 
+          # 计算编译总耗时
+          END_TIME=$(date +%s)
+          ELAPSED=$((END_TIME - START_TIME))
+          ELAPSED_MIN=$((ELAPSED / 60))
+          ELAPSED_SEC=$((ELAPSED % 60))
+          echo "COMPILE_TIME=${ELAPSED_MIN}分${ELAPSED_SEC}秒" >> $GITHUB_ENV
+
+          # 提取源码版本信息（最后一次提交记录）
+          VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
+          echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
+
+          # 获取固件最后一次修改时间
+          FIRMWARE_MTIME=$(find ./bin/targets/ -type f -name "*.bin" -o -name "*.img" -o -name "*.elf" -o -name "*.gz" | head -1 | xargs stat -c %y 2>/dev/null | cut -d '.' -f1)
+          echo "FIRMWARE_MTIME=$FIRMWARE_MTIME" >> $GITHUB_ENV
+
           cp -f ./.config ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
 
           if [[ $WRT_TEST != 'true' ]]; then
@@ -232,11 +248,7 @@ jobs:
           tag_name: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}
           files: ./wrt/upload/*.*
           body: |
-            这是个平台固件包，内含多个设备！
-            请注意选择你需要的设备固件！
-            不要问，刷就完事了！
-
-            全系带开源硬件加速，别问了！
+            ## 固件信息
 
             源码：${{env.WRT_REPO}}
             分支：${{env.WRT_BRANCH}}
@@ -253,3 +265,12 @@ jobs:
 
             内核版本：${{env.WRT_KVER}}
             插件列表：${{env.WRT_LIST}}
+
+            ## 编译信息
+
+            编译总耗时：${{env.COMPILE_TIME}}
+            固件最后修改：${{env.FIRMWARE_MTIME}}
+
+            ## 源码更新记录
+
+            ${{env.VERSION_INFO}}
