@@ -218,10 +218,6 @@ jobs:
           VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
           echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
 
-          # 获取固件最后一次修改时间
-          FIRMWARE_MTIME=$(find ./bin/targets/ -type f -name "*.bin" -o -name "*.img" -o -name "*.elf" -o -name "*.gz" | head -1 | xargs stat -c %y 2>/dev/null | cut -d '.' -f1)
-          echo "FIRMWARE_MTIME=$FIRMWARE_MTIME" >> $GITHUB_ENV
-
           cp -f ./.config ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
 
           if [[ $WRT_TEST != 'true' ]]; then
@@ -269,7 +265,6 @@ jobs:
             ## 编译信息
 
             编译总耗时：${{env.COMPILE_TIME}}
-            固件最后修改：${{env.FIRMWARE_MTIME}}
 
             ## 源码更新记录
 
