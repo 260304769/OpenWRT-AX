@@ -95,13 +95,13 @@ jobs:
           echo "WRT_WIFI=wifi-yes" >> $GITHUB_ENV
           echo "WRT_KVER=none" >> $GITHUB_ENV
           echo "WRT_LIST=none" >> $GITHUB_ENV
+          echo "WRT_START_TIME=$(date +%s)" >> $GITHUB_ENV
 
       - name: Clone Code
         run: |
           git clone --depth=1 --single-branch --branch $WRT_BRANCH $WRT_REPO ./wrt/
 
           cd ./wrt/ && echo "WRT_HASH=$(git log -1 --pretty=format:'%h')" >> $GITHUB_ENV
-          cd ./wrt/ && echo "VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")" >> $GITHUB_ENV
 
           # GitHub Action 移除国内下载源
           PROJECT_MIRRORS_FILE="./scripts/projectsmirrors.json"
@@ -213,12 +213,24 @@ jobs:
             echo "WRT_KVER=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^kernel - \K[\d\.]+' {} \;)" >> $GITHUB_ENV
             echo "WRT_LIST=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | tr '\n' ' ')" >> $GITHUB_ENV
 
+            # 获取主源码最后提交信息（用于 Release Body）
+            cd $GITHUB_WORKSPACE/wrt
+            echo "VERSION_INFO<<EOF" >> $GITHUB_ENV
+            echo "$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+
+            # 计算编译耗时（分钟）
+            WRT_END_TIME=$(date +%s)
+            WRT_DURATION=$(((WRT_END_TIME - WRT_START_TIME) / 60))
+            echo "WRT_DURATION=${WRT_DURATION}" >> $GITHUB_ENV
+
             find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
 
             for FILE in $(find ./bin/targets/ -type f -iname "*$WRT_TARGET*") ; do
               EXT=$(basename $FILE | cut -d '.' -f 2-)
               NAME=$(basename $FILE | cut -d '.' -f 1 | grep -io "\($WRT_TARGET\).*")
-              NEW_FILE="$NAME"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_WIFI"-"$WRT_DATE"."$EXT"
+              # 移除日期，改用哈希，文件名固定
+              NEW_FILE="$NAME"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_WIFI"-"$WRT_HASH"."$EXT"
               mv -f $FILE ./upload/$NEW_FILE
             done
 
@@ -234,16 +246,18 @@ jobs:
           files: ./wrt/upload/*.*
           body: |
             💻 这是 ${{env.WRT_TARGET}} 平台使用的 OpenWrt 固件
+
             ⚽ 固件源码: ${{env.WRT_REPO}}
             💝 源码分支: ${{env.WRT_BRANCH}}
             🌐 默认地址: ${{env.WRT_IP}}
             🔑 默认密码: ${{env.WRT_PW}}
+
             🧊 固件版本
             固件内核版本：${{env.WRT_KVER}}
 
-            固件编译前最后一次➦主源码更新记录
-            ${{ env.VERSION_INFO }}
+            固件编译前最后一次➦[主源码](${{env.WRT_REPO}})更新记录
+            - ${{env.VERSION_INFO}}
 
-            WIFI名称：${{env.WRT_SSID}}
-            WIFI密码：${{env.WRT_WORD}}
             插件列表：${{env.WRT_LIST}}
+
+            ⏱️ 编译耗时：${{env.WRT_DURATION}} 分钟
