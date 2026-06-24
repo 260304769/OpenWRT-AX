@@ -6,12 +6,13 @@ CONFIG_PACKAGE_luci-app-upnp=y
 CONFIG_PACKAGE_luci-app-zerotier=y
 CONFIG_PACKAGE_zerotier=y
 CONFIG_PACKAGE_kmod-tun=y
+CONFIG_PACKAGE_kmod-br-netfilter=y
 
-#删除插件
+#删除无用插件
 CONFIG_PACKAGE_luci-app-attendedsysupgrade=n
 CONFIG_PACKAGE_luci-app-gecoosac=n
 
-#参数调整
+#全局编译参数
 CONFIG_CCACHE=y
 CONFIG_DEVEL=y
 CONFIG_FEED_video=n
@@ -19,25 +20,42 @@ CONFIG_TARGET_MULTI_PROFILE=y
 CONFIG_TARGET_PER_DEVICE_ROOTFS=y
 CONFIG_TARGET_ROOTFS_INITRAMFS=n
 
-#组件调整
+#系统性能组件
 CONFIG_PACKAGE_autocore=y
 CONFIG_PACKAGE_coremark=y
 CONFIG_PACKAGE_cpufreq=y
 CONFIG_PACKAGE_curl=y
-# ZeroTier 公共依赖
+
+# ZeroTier 依赖库
 CONFIG_PACKAGE_jq=y
 CONFIG_PACKAGE_xz=y
-CONFIG_PACKAGE_uclibcxx=y
+# 禁用冗余轻量C++库，仅保留完整标准C++库
+# CONFIG_PACKAGE_uclibcxx is not set
 CONFIG_PACKAGE_libstdcpp=y
+
+#调试监控工具
 CONFIG_PACKAGE_htop=y
 CONFIG_PACKAGE_iperf3=y
+
+#ZRAM内存压缩（LZ4高性能）
 CONFIG_PACKAGE_zram-swap=y
 CONFIG_PACKAGE_kmod-lib-lz4=y
 CONFIG_KERNEL_ZRAM_BACKEND_LZ4=y
 CONFIG_KERNEL_ZRAM_DEF_COMP_LZ4=y
+
+#NSS硬件流量队列（关闭，游戏低延迟需求改为=y）
 CONFIG_PACKAGE_sqm-scripts-nss=n
-# 新增 ttyd 网页终端
+
+#网页SSH终端 ttyd
 CONFIG_PACKAGE_luci-app-ttyd=y
 CONFIG_PACKAGE_ttyd=y
 CONFIG_PACKAGE_libwebsockets=y
+
+#网络唤醒WOL
 CONFIG_PACKAGE_luci-app-wol=y
+
+# 内核调度：自愿抢占（家用游戏低延迟最优）
+# CONFIG_KERNEL_PREEMPT_NONE is not set
+CONFIG_KERNEL_PREEMPT_VOLUNTARY=y
+# CONFIG_KERNEL_PREEMPT is not set
+# CONFIG_KERNEL_PREEMPT_RT is not set
