@@ -107,10 +107,32 @@ clean_conflict_packages() {
     sed -i '/CONFIG_PACKAGE_wpad-mesh/d' "$config_file"
     echo "CONFIG_PACKAGE_wpad-openssl=y" >> "$config_file"
     
-    # 6.2 隧道协议冲突
-    for pkg in kmod-6rd kmod-gre kmod-gre6 kmod-l2tp kmod-iptunnel kmod-iptunnel4 kmod-iptunnel6 kmod-vxlan kmod-udptunnel4 kmod-udptunnel6 kmod-sit kmod-ipip; do
+    # 6.2 隧道协议冲突（通用隧道 + ECM 编译依赖强制断开）
+    local tunnel_pkgs=(
+        "kmod-6rd"
+        "kmod-gre"
+        "kmod-gre6"
+        "kmod-l2tp"
+        "kmod-iptunnel"
+        "kmod-iptunnel4"
+        "kmod-iptunnel6"
+        "kmod-vxlan"
+        "kmod-udptunnel4"
+        "kmod-udptunnel6"
+        "kmod-sit"
+        "kmod-ipip"
+        # === ECM 硬编码依赖的隧道/PPP模块（必须断开） ===
+        "kmod-ppp"
+        "kmod-pppoe"
+        "kmod-pptp"
+        "kmod-pppox"
+        "kmod-nat46"
+    )
+    for pkg in "${tunnel_pkgs[@]}"; do
         sed -i "/CONFIG_PACKAGE_${pkg}/d" "$config_file"
+        echo "# CONFIG_PACKAGE_${pkg} is not set" >> "$config_file"
     done
+    green "✅ 隧道协议及 ECM 隧道依赖已全部断开"
     
     # 6.3 NAT/防火墙冲突（强制 NSS ECM 硬加速，删除软件 offload）
     sed -i '/CONFIG_PACKAGE_kmod-nft-offload/d' "$config_file"
@@ -125,16 +147,15 @@ clean_conflict_packages() {
     sed -i '/CONFIG_PACKAGE_kmod-net-selftests/d' "$config_file"
     
     # 6.6 IPQ6018 无线：仅保留 AHB 内置驱动，移除 PCI 驱动及无关固件
-    sed -i '/CONFIG_PACKAGE_kmod-ath11k-pci/d' "$config_file"          # 删除 PCI 驱动
+    sed -i '/CONFIG_PACKAGE_kmod-ath11k-pci/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca4019/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca9984/d' "$config_file"
-    sed -i '/CONFIG_PACKAGE_ath11k-firmware-qcn9074/d' "$config_file" # 删除 PCIe 卡固件
-    echo "CONFIG_PACKAGE_ath11k-firmware-ipq6018=y" >> "$config_file" # IPQ6018 内置 AHB 无线固件
+    sed -i '/CONFIG_PACKAGE_ath11k-firmware-qcn9074/d' "$config_file"
+    echo "CONFIG_PACKAGE_ath11k-firmware-ipq6018=y" >> "$config_file"
     
     # 6.7 队列限速：删除所有软件调度器，完全依赖 NSS 硬件 QoS
-    sed -i '/CONFIG_PACKAGE_kmod-sched-/d' "$config_file"   # 移除 cake/fq_codel 等所有 sched 模块
+    sed -i '/CONFIG_PACKAGE_kmod-sched-/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_kmod-sched-core/d' "$config_file"
-    # 不再添加任何 sched 模块，流量整形由 NSS 硬件完成
     
     green "✅ 冲突包清理完成（IPQ60XX 硬加速 / 无队列限速 / 无线无PCI）"
 }
@@ -155,11 +176,9 @@ WIFI_SH=$(find ./target/linux/{mediatek/filogic,qualcommax}/base-files/etc/uci-d
 WIFI_UC="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
 
 if [ -f "$WIFI_SH" ]; then
-    # 原有 SSID/密码/加密固化
     sed -i "s/BASE_SSID='.*'/BASE_SSID='$WRT_SSID'/g" $WIFI_SH
     sed -i "s/BASE_WORD='.*'/BASE_WORD='$WRT_WORD'/g" $WIFI_SH
 
-    # 追加 hostapd 日志静默（log_level=0）到 uci-defaults 脚本
     cat >> $WIFI_SH << 'EOF'
 
 # === 降低 hostapd 日志级别，避免连接/断开刷屏 ===
@@ -171,19 +190,15 @@ EOF
     green "✅ WiFi 参数已固化（uci-defaults）并已设置 hostapd log_level=0"
 
 elif [ -f "$WIFI_UC" ]; then
-    # 原有参数固化
     sed -i "s/ssid='.*'/ssid='$WRT_SSID'/g" $WIFI_UC
     sed -i "s/key='.*'/key='$WRT_WORD'/g" $WIFI_UC
     sed -i "s/country='.*'/country='CN'/g" $WIFI_UC
     sed -i "s/encryption='.*'/encryption='psk2+ccmp'/g" $WIFI_UC
     sed -i "s/disabled='1'/disabled='0'/g" $WIFI_UC
 
-    # 降低 hostapd 日志级别（修改模板，所有新增设备默认静默）
-    # 若已有 log_level 定义则覆盖，否则在 wifi-device 段插入
     if grep -q "log_level" "$WIFI_UC"; then
         sed -i "s/log_level='.*'/log_level='0'/g" $WIFI_UC
     else
-        # 在典型的 'option encryption' 之后插入 log_level
         sed -i "/option encryption/a\    option log_level '0'" $WIFI_UC
     fi
     green "✅ WiFi 参数已固化（mac80211.uc）并已设置 hostapd log_level=0"
@@ -240,6 +255,13 @@ verify_cleanup() {
         "kmod-sched-cake"
         "kmod-sched-core"
         "kmod-ath11k-pci"
+        # ECM 隧道依赖检查
+        "kmod-ppp"
+        "kmod-pppoe"
+        "kmod-pptp"
+        "kmod-pppox"
+        "kmod-vxlan"
+        "kmod-nat46"
     )
     
     echo ""
@@ -284,4 +306,5 @@ green "✅ 已修复：fstab / hostapd / 时间戳"
 green "✅ 已优化：NSS PBUF / 延迟卸载 / IPQ60XX硬加速+无队列限速+无线无PCI"
 green "✅ 已配置：WiFi SSID/密码/地区/加密 / 主机名/IP"
 green "✅ hostapd 日志已默认设为静默（仅输出错误），不再刷屏"
+green "✅ ECM 隧道编译依赖已断开，OFFLOAD 将正常生效"
 green "========================================"
