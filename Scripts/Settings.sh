@@ -10,8 +10,10 @@ green() {
 #==================== 新增：彻底移除block组件，根除fstab报错 ====================
 remove_block_package() {
     sed -i '/CONFIG_PACKAGE_block-mount/d' ./.config
+    sed -i '/CONFIG_PACKAGE_blockd/d' ./.config
     echo "CONFIG_PACKAGE_block-mount=n" >> ./.config
-    green "✅ block-mount 组件已彻底移除，不再产生fstab日志"
+    echo "CONFIG_PACKAGE_blockd=n" >> ./.config
+    green "✅ blockd + block-mount 双组件已彻底移除，不再产生fstab日志"
 }
 remove_block_package
 
@@ -37,34 +39,36 @@ clean_version_timestamp
 fix_boot_errors() {
     green "===== 修复hostapd权限错误 ====="
 
-    # 3.1 全局替换所有无线配置，把socket目录改为/tmp/hostapd
+    # 全局替换所有无线配置，把socket目录改为/tmp/hostapd
     find ./package -type f \( -name "*.uc" -o -name "wireless" -o -name "hostapd.conf" \) 2>/dev/null \
     | xargs -r sed -i 's|ctrl_interface=/var/run/hostapd|ctrl_interface=/tmp/hostapd|g'
 
-    # 3.2 在启动脚本预创建目录，赋予最高粘滞权限
     local src_init="./package/network/services/hostapd/files/hostapd.init"
     mkdir -p $(dirname "$src_init")
-    if [ -f "$src_init" ]; then
-        sed -i '/^start_service() {/a\    mkdir -p /tmp/hostapd\n    chmod 1777 /tmp/hostapd\n    rm -rf /var/run/hostapd' "$src_init"
-    else
-        cat > "$src_init" << 'EOF'
+
+    # 重写完整启动脚本，避免权限问题
+    cat > "$src_init" << 'EOF'
 #!/bin/sh /etc/rc.common
 START=50
 STOP=50
+
 start_service() {
     mkdir -p /tmp/hostapd
     chmod 1777 /tmp/hostapd
     rm -rf /var/run/hostapd
+
     procd_open_instance
     procd_set_param command /usr/sbin/hostapd
-    procd_set_param respawn
+    procd_set_param file /var/run/hostapd.conf
+    procd_set_param respawn 3 5
     procd_close_instance
 }
+
 stop_service() {
     killall hostapd
+    rm -rf /tmp/hostapd/*
 }
 EOF
-    fi
     chmod +x "$src_init"
     green "✅ hostapd 路径迁移至/tmp，权限报错彻底解决"
 }
@@ -81,7 +85,7 @@ update_nss_pbuf_performance() {
 }
 update_nss_pbuf_performance
 
-#==================== 5. NSS 延迟卸载脚本（缩短等待时间） ====================
+#==================== 5. NSS 延迟卸载脚本（仅卸载ifb，保留ECM硬件转发） ====================
 install_nss_fix() {
     local init_path="./package/base-files/files/etc/init.d/nss-fix"
     mkdir -p "$(dirname "$init_path")"
@@ -94,14 +98,19 @@ start() {
     (
         sleep 30
         rmmod ifb 2>/dev/null
-        rmmod qca-nss-ecm-offload 2>/dev/null
     ) &
 }
 EOF
     chmod +x "$init_path"
-    green "✅ NSS延迟卸载脚本安装完成"
+    green "✅ NSS延迟卸载脚本安装完成，保留ECM硬件加速"
 }
 install_nss_fix
+
+#==================== 公共函数：去重写入.config ====================
+add_config_once() {
+    local line="$1"
+    grep -qxF "$line" ./.config || echo "$line" >> ./.config
+}
 
 #==================== 6. 完整冲突清理（IPQ6018/AX5 专用） ====================
 clean_conflict_packages() {
@@ -112,7 +121,7 @@ clean_conflict_packages() {
     sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-wifi-meshmgr/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_wpad-basic/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_wpad-mesh/d' "$config_file"
-    grep -q "CONFIG_PACKAGE_wpad-openssl=y" "$config_file" || echo "CONFIG_PACKAGE_wpad-openssl=y" >> "$config_file"
+    add_config_once "CONFIG_PACKAGE_wpad-openssl=y"
     
     # 6.2 隧道协议冲突
     TUN_MODULES="kmod-6rd kmod-gre kmod-gre6 kmod-l2tp kmod-iptunnel kmod-iptunnel4 kmod-iptunnel6 kmod-vxlan kmod-udptunnel4 kmod-udptunnel6 kmod-sit kmod-ipip"
@@ -122,23 +131,23 @@ clean_conflict_packages() {
     
     # 6.3 NAT/防火墙冲突
     sed -i '/CONFIG_PACKAGE_kmod-nft-offload/d' "$config_file"
-    grep -q "CONFIG_PACKAGE_kmod-qca-nss-ecm=y" "$config_file" || echo "CONFIG_PACKAGE_kmod-qca-nss-ecm=y" >> "$config_file"
-    grep -q "CONFIG_PACKAGE_kmod-qca-nss-ecm-standard=y" "$config_file" || echo "CONFIG_PACKAGE_kmod-qca-nss-ecm-standard=y" >> "$config_file"
+    add_config_once "CONFIG_PACKAGE_kmod-qca-nss-ecm=y"
+    add_config_once "CONFIG_PACKAGE_kmod-qca-nss-ecm-standard=y"
     
     # 6.4 IPv6 冲突
     sed -i '/CONFIG_PACKAGE_odhcpd-ipv6only/d' "$config_file"
-    grep -q "CONFIG_PACKAGE_odhcpd=y" "$config_file" || echo "CONFIG_PACKAGE_odhcpd=y" >> "$config_file"
+    add_config_once "CONFIG_PACKAGE_odhcpd=y"
     
     sed -i '/CONFIG_PACKAGE_kmod-net-selftests/d' "$config_file"
     
     # 6.5 仅保留AHB ath11k固件，删除ath10k冗余
     sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca4019/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca9984/d' "$config_file"
-    grep -q "CONFIG_PACKAGE_ath11k-firmware-qcn9074=y" "$config_file" || echo "CONFIG_PACKAGE_ath11k-firmware-qcn9074=y" >> "$config_file"
+    add_config_once "CONFIG_PACKAGE_ath11k-firmware-qcn9074=y"
     
     # 6.6 Cake OOT调度器
     sed -i '/CONFIG_PACKAGE_kmod-sched-cake/d' "$config_file"
-    grep -q "CONFIG_PACKAGE_kmod-sched-cake-oot=y" "$config_file" || echo "CONFIG_PACKAGE_kmod-sched-cake-oot=y" >> "$config_file"
+    add_config_once "CONFIG_PACKAGE_kmod-sched-cake-oot=y"
     
     green "✅ 冲突包清理完成"
 }
@@ -148,7 +157,8 @@ clean_conflict_packages
 patch_wifi_full_reload() {
     local wifi_uc="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
     if [ -f "$wifi_uc" ]; then
-        sed -i '/ubus call network.wireless stop/a\    exec("rmmod kmod-ath11k-ahb kmod-ath11k 2>/dev/null; sleep(1);rmmod kmod-ath kmod-mac80211 kmod-cfg80211 2>/dev/null;sleep(2);modprobe kmod-cfg80211;modprobe kmod-mac80211;sleep(1);modprobe kmod-ath;modprobe kmod-ath11k;sleep(1);modprobe kmod-ath11k-ahb;");' "$wifi_uc"
+        # 修正语法错误，移除kmod前缀，使用正确lua执行命令
+        sed -i '/ubus call network.wireless stop;/a\        os.execute("rmmod ath11k-ahb ath11k 2>/dev/null; sleep(1); rmmod ath mac80211 cfg80211 2>/dev/null; sleep(2); modprobe cfg80211; modprobe mac80211; sleep(1); modprobe ath; modprobe ath11k; sleep(1); modprobe ath11k-ahb;")' "$wifi_uc"
         green "✅ wifi补丁：仅重载AHB总线WiFi控制器，去除PCI冗余，避免总线复位"
     fi
 }
@@ -179,10 +189,6 @@ CFG_FILE="./package/base-files/files/bin/config_generate"
 green "✅ 管理 IP: $WRT_IP，主机名: $WRT_NAME"
 
 #==================== 10. 写入基础编译配置（防重复写入） ====================
-add_config_once() {
-    local line="$1"
-    grep -qxF "$line" ./.config || echo "$line" >> ./.config
-}
 add_config_once "CONFIG_PACKAGE_luci=y"
 add_config_once "CONFIG_LUCI_LANG_zh_Hans=y"
 add_config_once "CONFIG_PACKAGE_luci-theme-$WRT_THEME=y"
@@ -266,4 +272,5 @@ green "✅ hostapd迁移到/tmp目录，rmdir权限错误根除"
 green "✅ rsyslog拦截qcom_rpm内核冗余日志"
 green "✅ 适配IPQ6018 AHB内置WiFi，移除PCI无效代码"
 green "✅ 缓解AHB总线争抢，减少excessive missing ACK掉线"
+green "✅ 保留NSS-ECM硬件转发，不会被意外卸载"
 green "========================================"
