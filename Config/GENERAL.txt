@@ -1,18 +1,22 @@
-#增加插件
+#==================== 增加插件 ====================
 CONFIG_PACKAGE_luci-app-autoreboot=y
 CONFIG_PACKAGE_luci-app-upnp=y
 
-# 新增 ZeroTier 异地组网
+#==================== ZeroTier 异地组网 ====================
 CONFIG_PACKAGE_luci-app-zerotier=y
 CONFIG_PACKAGE_zerotier=y
 CONFIG_PACKAGE_kmod-tun=y
 CONFIG_PACKAGE_kmod-br-netfilter=y
+CONFIG_PACKAGE_jq=y
+CONFIG_PACKAGE_xz=y
+CONFIG_PACKAGE_libstdcpp=y
+# CONFIG_PACKAGE_uclibcxx is not set
 
-#删除无用插件
+#==================== 删除无用插件 ====================
 CONFIG_PACKAGE_luci-app-attendedsysupgrade=n
 CONFIG_PACKAGE_luci-app-gecoosac=n
 
-#全局编译参数
+#==================== 全局编译参数 ====================
 CONFIG_CCACHE=y
 CONFIG_DEVEL=y
 CONFIG_FEED_video=n
@@ -20,46 +24,40 @@ CONFIG_TARGET_MULTI_PROFILE=y
 CONFIG_TARGET_PER_DEVICE_ROOTFS=y
 CONFIG_TARGET_ROOTFS_INITRAMFS=n
 
-#系统性能组件
+#==================== 系统性能组件 ====================
 CONFIG_PACKAGE_autocore=y
 CONFIG_PACKAGE_coremark=y
 CONFIG_PACKAGE_cpufreq=y
 CONFIG_PACKAGE_curl=y
 
-# ZeroTier 依赖库
-CONFIG_PACKAGE_jq=y
-CONFIG_PACKAGE_xz=y
-# 禁用冗余轻量C++库，仅保留完整标准C++库
-# CONFIG_PACKAGE_uclibcxx is not set
-CONFIG_PACKAGE_libstdcpp=y
-
-#调试监控工具
+#==================== 调试监控工具 ====================
 CONFIG_PACKAGE_htop=y
 CONFIG_PACKAGE_iperf3=y
 
-#ZRAM内存压缩（LZ4高性能）
+#==================== ZRAM 内存压缩 ====================
 CONFIG_PACKAGE_zram-swap=y
 CONFIG_PACKAGE_kmod-lib-lz4=y
 CONFIG_KERNEL_ZRAM_BACKEND_LZ4=y
 CONFIG_KERNEL_ZRAM_DEF_COMP_LZ4=y
 
-#NSS硬件流量队列（关闭，游戏低延迟需求改为=y）
-CONFIG_PACKAGE_sqm-scripts-nss=n
-
-#网页SSH终端 ttyd
+#==================== 网页终端 ttyd ====================
 CONFIG_PACKAGE_luci-app-ttyd=y
 CONFIG_PACKAGE_ttyd=y
 CONFIG_PACKAGE_libwebsockets=y
 
-#网络唤醒WOL
+#==================== 网络唤醒 WOL ====================
 CONFIG_PACKAGE_luci-app-wol=y
 
-# 内核调度：自愿抢占（家用游戏低延迟最优）
+#==================== 内核调度（游戏低延迟） ====================
 # CONFIG_KERNEL_PREEMPT_NONE is not set
 CONFIG_KERNEL_PREEMPT_VOLUNTARY=y
 # CONFIG_KERNEL_PREEMPT is not set
 # CONFIG_KERNEL_PREEMPT_RT is not set
-# 隧道协议（与 NSS 冲突）
+
+#==================== NSS 硬件队列（关闭 = 游戏低延迟） ====================
+CONFIG_PACKAGE_sqm-scripts-nss=n
+
+#==================== 隧道协议（与 NSS 冲突） ====================
 CONFIG_PACKAGE_kmod-gre=n
 CONFIG_PACKAGE_kmod-gre6=n
 CONFIG_PACKAGE_kmod-l2tp=n
@@ -73,15 +71,15 @@ CONFIG_PACKAGE_kmod-udptunnel4=n
 CONFIG_PACKAGE_kmod-udptunnel6=n
 CONFIG_PACKAGE_kmod-6rd=n
 
-# 硬件卸载（与 NSS ECM 冲突）
+#==================== 硬件卸载（与 NSS ECM 冲突） ====================
 CONFIG_PACKAGE_kmod-nft-offload=n
 CONFIG_PACKAGE_kmod-nf-flow=n
 
-# Mesh（与 ath11k 冲突）
+#==================== Mesh（与 ath11k 冲突） ====================
 CONFIG_PACKAGE_kmod-qca-nss-drv-wifi-meshmgr=n
 
-# 测试工具
+#==================== 测试工具 ====================
 CONFIG_PACKAGE_kmod-net-selftests=n
 
-# IPv6 DHCP（二选一，保留 odhcpd）
+#==================== IPv6 DHCP（二选一，保留 odhcpd） ====================
 CONFIG_PACKAGE_odhcpd-ipv6only=n
