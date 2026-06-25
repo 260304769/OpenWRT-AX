@@ -59,3 +59,29 @@ CONFIG_PACKAGE_luci-app-wol=y
 CONFIG_KERNEL_PREEMPT_VOLUNTARY=y
 # CONFIG_KERNEL_PREEMPT is not set
 # CONFIG_KERNEL_PREEMPT_RT is not set
+# 隧道协议（与 NSS 冲突）
+CONFIG_PACKAGE_kmod-gre=n
+CONFIG_PACKAGE_kmod-gre6=n
+CONFIG_PACKAGE_kmod-l2tp=n
+CONFIG_PACKAGE_kmod-sit=n
+CONFIG_PACKAGE_kmod-ipip=n
+CONFIG_PACKAGE_kmod-iptunnel=n
+CONFIG_PACKAGE_kmod-iptunnel4=n
+CONFIG_PACKAGE_kmod-iptunnel6=n
+CONFIG_PACKAGE_kmod-vxlan=n
+CONFIG_PACKAGE_kmod-udptunnel4=n
+CONFIG_PACKAGE_kmod-udptunnel6=n
+CONFIG_PACKAGE_kmod-6rd=n
+
+# 硬件卸载（与 NSS ECM 冲突）
+CONFIG_PACKAGE_kmod-nft-offload=n
+CONFIG_PACKAGE_kmod-nf-flow=n
+
+# Mesh（与 ath11k 冲突）
+CONFIG_PACKAGE_kmod-qca-nss-drv-wifi-meshmgr=n
+
+# 测试工具
+CONFIG_PACKAGE_kmod-net-selftests=n
+
+# IPv6 DHCP（二选一，保留 odhcpd）
+CONFIG_PACKAGE_odhcpd-ipv6only=n
