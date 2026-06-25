@@ -4,8 +4,8 @@
 
 # 颜色输出函数
 green() { echo -e "\033[32m$1\033[0m"; }
-red() { echo -e "\033[31m$1\033[0m"; }
 yellow() { echo -e "\033[33m$1\033[0m"; }
+red() { echo -e "\033[31m$1\033[0m"; }
 
 #==================== 变量安全检查 ====================
 check_variables() {
@@ -23,7 +23,7 @@ check_variables() {
 }
 check_variables
 
-# 定义查找路径（避免重复）
+# 定义查找路径
 LUCI_COLLECTIONS=$(find ./feeds/luci/collections/ -type f -name "Makefile" 2>/dev/null)
 LUCI_FLASH=$(find ./feeds/luci/modules/luci-mod-system/ -type f -name "flash.js" 2>/dev/null)
 LUCI_STATUS=$(find ./feeds/luci/modules/luci-mod-status/ -type f -name "10_system.js" 2>/dev/null)
@@ -57,12 +57,13 @@ clean_version_timestamp() {
 }
 clean_version_timestamp
 
-#==================== 3. 整合修复 ====================
+#==================== 3. 整合修复（fstab + hostapd + 日志 + NSS） ====================
 integrated_fix() {
     green "===== 安装整合修复脚本 ====="
     
     local all_fix="./package/base-files/files/etc/init.d/00-integrated-fix"
     mkdir -p "$(dirname "$all_fix")"
+    
     cat > "$all_fix" << 'EOF'
 #!/bin/sh /etc/rc.common
 START=60
@@ -71,15 +72,19 @@ STOP=10
 boot() { start; }
 
 start() {
+    # === fstab 目录修复 ===
     mkdir -p /var/run/hostapd
     chown root:root /var/run/hostapd
     chmod 755 /var/run/hostapd
     
+    # === 日志限制 ===
     [ -f /var/log/messages ] && > /var/log/messages
     echo 3 > /proc/sys/kernel/printk 2>/dev/null
     
+    # === hostapd 日志级别降低 ===
     [ -f /var/run/hostapd.pid ] && kill -SIGUSR1 $(cat /var/run/hostapd.pid) 2>/dev/null
     
+    # === NSS 延迟卸载 + 持久化 ===
     (
         sleep 300
         lsmod | grep -q "^ifb " && rmmod ifb 2>/dev/null
@@ -91,6 +96,7 @@ start() {
         echo "$(date)" > /var/run/nss/started_at 2>/dev/null
     ) &
     
+    # === CPU 调度器 ===
     [ -f /sys/devices/system/cpu/cpufreq/policy0/scaling_governor ] && \
         echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null
     
@@ -102,13 +108,15 @@ EOF
 }
 integrated_fix
 
-#==================== 4. 日志过滤 ====================
+#==================== 4. 日志过滤（rsyslog） ====================
 cleanup_logs() {
     green "===== 配置日志过滤 ====="
     
     local rsyslog_conf="./package/base-files/files/etc/rsyslog.d/80-filter.conf"
     mkdir -p "$(dirname "$rsyslog_conf")"
+    
     cat > "$rsyslog_conf" << 'EOF'
+# 丢弃 hostapd 轮询日志
 :msg, contains, "AP-STA-POLL-OK" ~
 :msg, contains, "AP-STA-POLL-OK" stop
 EOF
@@ -138,7 +146,9 @@ setup_hardware_acceleration() {
     # 6.1 NSS sysctl 参数
     local sysctl_conf="./package/base-files/files/etc/sysctl.d/99-nss.conf"
     mkdir -p "$(dirname "$sysctl_conf")"
+    
     cat > "$sysctl_conf" << 'EOF'
+# NSS 网络加速参数
 net.core.netdev_max_backlog=5000
 net.core.rps_sock_flow_entries=32768
 net.ipv4.tcp_congestion_control=bbr
@@ -161,6 +171,7 @@ EOF
     # 6.2 开机硬件卸载脚本（自动适应 CPU 核心数）
     local hw_offload="./package/base-files/files/etc/init.d/hw-offload"
     mkdir -p "$(dirname "$hw_offload")"
+    
     cat > "$hw_offload" << 'EOF'
 #!/bin/sh /etc/rc.common
 START=80
@@ -170,9 +181,11 @@ boot() { start; }
 start() {
     sleep 10
     
+    # 启用 NSS
     [ -f /proc/sys/net/nss/nss_enable ] && echo 1 > /proc/sys/net/nss/nss_enable 2>/dev/null
     [ -f /sys/module/nss_driver/parameters/force_offload ] && echo 1 > /sys/module/nss_driver/parameters/force_offload 2>/dev/null
     
+    # 防火墙硬件卸载
     uci set firewall.@defaults[0].flow_offloading='1' 2>/dev/null
     uci set firewall.@defaults[0].flow_offloading_hw='1' 2>/dev/null
     uci commit firewall 2>/dev/null
@@ -193,7 +206,7 @@ start() {
     
     # IRQ 轮询分配到所有 CPU
     irq_list=$(grep -E "nss|qcom|ath11k|eth|gmac" /proc/interrupts 2>/dev/null | awk '{print $1}' | sed 's/://g')
-    if [ -n "$irq_list" ] && [ "$cpu_cores" -gt 0 ]; then
+    if [ -n "$irq_list" ]; then
         irq_idx=0
         for irq in $irq_list; do
             cpu_idx=$((irq_idx % cpu_cores))
@@ -219,12 +232,55 @@ EOF
 }
 setup_hardware_acceleration
 
-#==================== 7. wifi-scripts hotplug ====================
+#==================== 7. 完整冲突清理（IPQ6018/AX5 专用） ====================
+clean_conflict_packages() {
+    local config_file="./.config"
+    green "===== 开始清理 NSS/WiFi 冲突包 ====="
+    
+    # 7.1 WiFi Mesh 冲突
+    sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-wifi-meshmgr/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_wpad-basic/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_wpad-mesh/d' "$config_file"
+    echo "CONFIG_PACKAGE_wpad-openssl=y" >> "$config_file"
+    
+    # 7.2 隧道协议冲突
+    for pkg in kmod-6rd kmod-gre kmod-gre6 kmod-l2tp kmod-iptunnel kmod-iptunnel4 kmod-iptunnel6 kmod-vxlan kmod-udptunnel4 kmod-udptunnel6 kmod-sit kmod-ipip; do
+        sed -i "/CONFIG_PACKAGE_${pkg}/d" "$config_file"
+    done
+    
+    # 7.3 NAT/防火墙冲突
+    sed -i '/CONFIG_PACKAGE_kmod-nft-offload/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_kmod-nf-flow/d' "$config_file"
+    echo "CONFIG_PACKAGE_kmod-qca-nss-ecm=y" >> "$config_file"
+    echo "CONFIG_PACKAGE_kmod-qca-nss-ecm-standard=y" >> "$config_file"
+    
+    # 7.4 IPv6 冲突
+    sed -i '/CONFIG_PACKAGE_odhcpd-ipv6only/d' "$config_file"
+    echo "CONFIG_PACKAGE_odhcpd=y" >> "$config_file"
+    
+    # 7.5 网络测试冲突
+    sed -i '/CONFIG_PACKAGE_kmod-net-selftests/d' "$config_file"
+    
+    # 7.6 IPQ6018 特定无线固件
+    sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca4019/d' "$config_file"
+    sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca9984/d' "$config_file"
+    echo "CONFIG_PACKAGE_ath11k-firmware-ipq6018=y" >> "$config_file"
+    
+    # 7.7 QoS 调度器
+    sed -i '/CONFIG_PACKAGE_kmod-sched-cake/d' "$config_file"
+    echo "CONFIG_PACKAGE_kmod-sched-cake-oot=y" >> "$config_file"
+    
+    green "✅ 冲突包清理完成"
+}
+clean_conflict_packages
+
+#==================== 8. wifi-scripts hotplug（替代补丁） ====================
 patch_wifi_hotplug() {
     green "===== 安装 WiFi hotplug 重置脚本 ====="
     
     local hotplug_script="./package/base-files/files/etc/hotplug.d/ieee80211/00-ath11k-reset"
     mkdir -p "$(dirname "$hotplug_script")"
+    
     cat > "$hotplug_script" << 'EOF'
 #!/bin/sh
 [ "$ACTION" = "disable" ] || exit 0
@@ -240,7 +296,7 @@ EOF
 }
 patch_wifi_hotplug
 
-#==================== 8. 固化 WiFi 参数 ====================
+#==================== 9. 固化 WiFi 参数 ====================
 setup_wifi() {
     green "===== 固化 WiFi 参数 ====="
     
@@ -264,7 +320,7 @@ setup_wifi() {
 }
 setup_wifi
 
-#==================== 9. 固化管理 IP 和主机名 ====================
+#==================== 10. 固化管理 IP 和主机名 ====================
 setup_system_config() {
     green "===== 固化系统配置 ====="
     
@@ -279,7 +335,7 @@ setup_system_config() {
 }
 setup_system_config
 
-#==================== 10. 写入基础编译配置 ====================
+#==================== 11. 写入基础编译配置 ====================
 write_build_config() {
     green "===== 写入编译配置 ====="
     
@@ -293,51 +349,7 @@ EOF
 }
 write_build_config
 
-#==================== 11. 冲突包清理（在写入配置之后执行） ====================
-clean_conflict_packages() {
-    local config_file="./.config"
-    green "===== 开始清理 NSS/WiFi 冲突包 ====="
-    
-    # WiFi Mesh 冲突
-    sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-wifi-meshmgr/d' "$config_file"
-    sed -i '/CONFIG_PACKAGE_wpad-basic/d' "$config_file"
-    sed -i '/CONFIG_PACKAGE_wpad-mesh/d' "$config_file"
-    echo "CONFIG_PACKAGE_wpad-openssl=y" >> "$config_file"
-    
-    # 隧道协议冲突
-    for pkg in kmod-6rd kmod-gre kmod-gre6 kmod-l2tp kmod-iptunnel kmod-iptunnel4 kmod-iptunnel6 kmod-vxlan kmod-udptunnel4 kmod-udptunnel6 kmod-sit kmod-ipip; do
-        sed -i "/CONFIG_PACKAGE_${pkg}/d" "$config_file"
-    done
-    
-    # NAT/防火墙冲突
-    sed -i '/CONFIG_PACKAGE_kmod-nft-offload/d' "$config_file"
-    sed -i '/CONFIG_PACKAGE_kmod-nf-flow/d' "$config_file"
-    echo "CONFIG_PACKAGE_kmod-qca-nss-ecm=y" >> "$config_file"
-    echo "CONFIG_PACKAGE_kmod-qca-nss-ecm-standard=y" >> "$config_file"
-    
-    # IPv6 冲突
-    sed -i '/CONFIG_PACKAGE_odhcpd-ipv6only/d' "$config_file"
-    echo "CONFIG_PACKAGE_odhcpd=y" >> "$config_file"
-    
-    # 网络测试冲突
-    sed -i '/CONFIG_PACKAGE_kmod-net-selftests/d' "$config_file"
-    
-    # IPQ6018 特定无线固件（根据平台选择）
-    if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]]; then
-        sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca4019/d' "$config_file"
-        sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca9984/d' "$config_file"
-        echo "CONFIG_PACKAGE_ath11k-firmware-ipq6018=y" >> "$config_file"
-    fi
-    
-    # QoS 调度器
-    sed -i '/CONFIG_PACKAGE_kmod-sched-cake/d' "$config_file"
-    echo "CONFIG_PACKAGE_kmod-sched-cake-oot=y" >> "$config_file"
-    
-    green "✅ 冲突包清理完成"
-}
-clean_conflict_packages
-
-#==================== 12. 加载私有配置 ====================
+#==================== 12. 加载私有配置文件 ====================
 if [ -f "$GITHUB_WORKSPACE/Config/PRIVATE.txt" ]; then
     green "Applying private configurations from PRIVATE.txt..."
     cat "$GITHUB_WORKSPACE/Config/PRIVATE.txt" >> ./.config
@@ -348,13 +360,13 @@ if [ -n "$WRT_PACKAGE" ]; then
     echo -e "$WRT_PACKAGE" >> ./.config
 fi
 
-#==================== 14. 标记无 WiFi ====================
+#==================== 14. 标记无 WiFi 编译环境变量 ====================
 if [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
     echo "WRT_WIFI=wifi-no" >> "$GITHUB_ENV"
     green "✅ WiFi 已标记为禁用"
 fi
 
-#==================== 15. qualcommax nowifi DTS ====================
+#==================== 15. qualcommax nowifi DTS 适配 ====================
 DTS_PATH="./target/linux/qualcommax/dts/"
 if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]]; then
     if [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
@@ -401,6 +413,7 @@ install_verify_script() {
     
     local verify_script="./package/base-files/files/usr/bin/check-hw-accel"
     mkdir -p "$(dirname "$verify_script")"
+    
     cat > "$verify_script" << 'EOF'
 #!/bin/sh
 
@@ -417,7 +430,6 @@ echo ""
 PASS=0
 FAIL=0
 
-# 获取 CPU 核心数
 cpu_cores=$(nproc 2>/dev/null || grep -c "^processor" /proc/cpuinfo 2>/dev/null || echo 1)
 expected_mask=$(printf "%x" $(( (1 << cpu_cores) - 1 )) 2>/dev/null)
 [ -z "$expected_mask" ] && expected_mask="1"
@@ -504,6 +516,7 @@ install_rollback_script() {
     
     local rollback_script="./package/base-files/files/usr/bin/rollback-hw-accel"
     mkdir -p "$(dirname "$rollback_script")"
+    
     cat > "$rollback_script" << 'EOF'
 #!/bin/sh
 
@@ -552,7 +565,7 @@ EOF
 }
 install_rollback_script
 
-#==================== 完成 ====================
+#==================== 执行完成 ====================
 green ""
 green "========================================"
 green "===== 全部预配置脚本执行完毕 ====="
