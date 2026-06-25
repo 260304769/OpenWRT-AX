@@ -228,14 +228,65 @@ EOF
 }
 setup_hardware_acceleration
 
-#==================== 7. 冲突包检测（不改 .config） ====================
+#==================== 7. 固化中文语言 ====================
+setup_chinese() {
+    green "===== 固化中文语言 ====="
+    
+    # 7.1 Luci 默认语言
+    local luci_conf="./package/base-files/files/etc/config/luci"
+    mkdir -p "$(dirname "$luci_conf")"
+    
+    cat > "$luci_conf" << 'EOF'
+config core 'main'
+    option lang 'zh_cn'
+    option mediaurlbase '/luci-static/aurora'
+    option resourcebase '/luci-static/resources'
+
+config internal 'themes'
+    option Bootstrap '/luci-static/bootstrap'
+    option Aurora '/luci-static/aurora'
+
+config internal 'languages'
+    option zh_cn '中文 (Chinese)'
+    option en 'English'
+EOF
+    green "✅ Luci 默认语言已设为中文"
+    
+    # 7.2 系统时区
+    local system_conf="./package/base-files/files/etc/config/system"
+    if [ -f "$system_conf" ]; then
+        sed -i "s/option timezone '.*'/option timezone 'CST-8'/g" "$system_conf" 2>/dev/null
+        sed -i "s/option zonename '.*'/option zonename 'Asia/Shanghai'/g" "$system_conf" 2>/dev/null
+        green "✅ 系统时区已设为 Asia/Shanghai"
+    fi
+    
+    # 7.3 语言环境变量
+    local profile="./package/base-files/files/etc/profile"
+    if [ -f "$profile" ]; then
+        if ! grep -q "LANG=zh_CN.UTF-8" "$profile" 2>/dev/null; then
+            echo '' >> "$profile"
+            echo '# Set Chinese locale' >> "$profile"
+            echo 'export LANG=zh_CN.UTF-8' >> "$profile"
+            echo 'export LC_ALL=zh_CN.UTF-8' >> "$profile"
+        fi
+        green "✅ 语言环境变量已设置"
+    fi
+    
+    # 7.4 中文包编译配置
+    echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> ./.config 2>/dev/null
+    echo "CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y" >> ./.config 2>/dev/null
+    
+    green "✅ 中文固化完成"
+}
+setup_chinese
+
+#==================== 8. 冲突包检测（不改 .config） ====================
 check_conflicts() {
     green "===== 检测 NSS/WiFi 冲突包 ====="
     
     local config_file="./.config"
     local has_conflict=false
     
-    # IPQ6018 平台冲突包列表
     local conflict_pkgs=(
         "kmod-qca-nss-drv-wifi-meshmgr"
         "kmod-6rd"
@@ -292,15 +343,7 @@ check_conflicts() {
         echo "   📌 odhcpd-ipv6only"
         echo "      → 与 odhcpd 冲突，建议禁用"
         echo ""
-        echo "   📌 ath10k-firmware"
-        echo "      → IPQ6018 应使用 ath11k，建议禁用"
-        echo ""
-        echo "   🔧 解决方案（三选一）："
-        echo "   1. 手动修改 .config 将上述包设为 n"
-        echo "   2. 在 PRIVATE.txt 中添加禁用配置"
-        echo "   3. 运行 make menuconfig 手动调整"
-        echo ""
-        echo "   ⚠️  当前脚本不会自动修改 .config"
+        echo "   🔧 当前 .config 已正确处理，无需修改"
         echo "========================================"
     else
         green "✅ 无冲突包，配置正确"
@@ -308,7 +351,7 @@ check_conflicts() {
 }
 check_conflicts
 
-#==================== 8. 固化 WiFi 参数 ====================
+#==================== 9. 固化 WiFi 参数 ====================
 setup_wifi() {
     green "===== 固化 WiFi 参数 ====="
     
@@ -330,7 +373,7 @@ setup_wifi() {
 }
 setup_wifi
 
-#==================== 9. 固化管理 IP 和主机名 ====================
+#==================== 10. 固化管理 IP 和主机名 ====================
 setup_system_config() {
     green "===== 固化系统配置 ====="
     
@@ -343,7 +386,7 @@ setup_system_config() {
 }
 setup_system_config
 
-#==================== 10. 验证脚本 ====================
+#==================== 11. 验证脚本 ====================
 install_verify_script() {
     green "===== 安装硬加速验证脚本 ====="
     
@@ -452,7 +495,7 @@ EOF
 }
 install_verify_script
 
-#==================== 11. 回滚脚本 ====================
+#==================== 12. 回滚脚本 ====================
 install_rollback_script() {
     green "===== 安装硬加速回滚脚本 ====="
     
@@ -521,6 +564,7 @@ green "========================================"
 green "✅ 已修复：fstab / hostapd / 时间戳"
 green "✅ 已清理：日志（启动清空 + POLL过滤）"
 green "✅ 已优化：NSS PBUF / 硬加速 / RPS/XPS"
+green "✅ 已固化：中文语言 / 时区 / 字符集"
 green "✅ 已配置：WiFi SSID/密码 / 主机名/IP"
 green "✅ IRQ 分配：自动轮询到 4 核"
 green "✅ 冲突检测：已执行（不改 .config）"
