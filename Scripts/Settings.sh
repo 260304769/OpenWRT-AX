@@ -7,6 +7,14 @@ green() {
     echo -e "\033[32m$1\033[0m"
 }
 
+#==================== 新增：彻底移除block组件，根除fstab报错 ====================
+remove_block_package() {
+    sed -i '/CONFIG_PACKAGE_block-mount/d' ./.config
+    echo "CONFIG_PACKAGE_block-mount=n" >> ./.config
+    green "✅ block-mount 组件已彻底移除，不再产生fstab日志"
+}
+remove_block_package
+
 #==================== 1. 清理在线升级、全局默认主题替换 ====================
 find ./feeds/luci/collections/ -type f -name "Makefile" 2>/dev/null | xargs -r sed -i "/attendedsysupgrade/d"
 find ./feeds/luci/collections/ -type f -name "Makefile" 2>/dev/null | xargs -r sed -i "s/luci-theme-bootstrap/luci-theme-$WRT_THEME/g"
@@ -25,36 +33,28 @@ clean_version_timestamp() {
 }
 clean_version_timestamp
 
-#==================== 3. 修复启动错误（fstab / hostapd 保留原生uci逻辑） ====================
+#==================== 3. hostapd根治：迁移socket到/tmp，彻底消除rmdir权限报错 ====================
 fix_boot_errors() {
-    green "===== 修复启动错误 ====="
-    
-    # 3.1 创建默认 fstab 配置
-    mkdir -p ./package/base-files/files/etc/config
-    cat > ./package/base-files/files/etc/config/fstab << 'EOF'
-config global
-    option anon_swap '0'
-    option anon_mount '0'
-    option auto_swap '1'
-    option auto_mount '1'
-    option delay_root '5'
-    option check_fs '0'
-EOF
-    green "✅ fstab 配置已创建"
+    green "===== 修复hostapd权限错误 ====="
 
-    # 3.2 仅补充hostapd目录权限，不覆盖原有启动命令
+    # 3.1 全局替换所有无线配置，把socket目录改为/tmp/hostapd
+    find ./package -type f \( -name "*.uc" -o -name "wireless" -o -name "hostapd.conf" \) 2>/dev/null \
+    | xargs -r sed -i 's|ctrl_interface=/var/run/hostapd|ctrl_interface=/tmp/hostapd|g'
+
+    # 3.2 在启动脚本预创建目录，赋予最高粘滞权限
     local src_init="./package/network/services/hostapd/files/hostapd.init"
     mkdir -p $(dirname "$src_init")
     if [ -f "$src_init" ]; then
-        sed -i '/^start_service() {/a\    mkdir -p /var/run/hostapd\n    chown root:root /var/run/hostapd\n    chmod 755 /var/run/hostapd' "$src_init"
+        sed -i '/^start_service() {/a\    mkdir -p /tmp/hostapd\n    chmod 1777 /tmp/hostapd\n    rm -rf /var/run/hostapd' "$src_init"
     else
         cat > "$src_init" << 'EOF'
 #!/bin/sh /etc/rc.common
 START=50
 STOP=50
 start_service() {
-    mkdir -p /var/run/hostapd
-    chown root:root /var/run/hostapd
+    mkdir -p /tmp/hostapd
+    chmod 1777 /tmp/hostapd
+    rm -rf /var/run/hostapd
     procd_open_instance
     procd_set_param command /usr/sbin/hostapd
     procd_set_param respawn
@@ -66,7 +66,7 @@ stop_service() {
 EOF
     fi
     chmod +x "$src_init"
-    green "✅ hostapd 权限修复完成"
+    green "✅ hostapd 路径迁移至/tmp，权限报错彻底解决"
 }
 fix_boot_errors
 
@@ -188,24 +188,36 @@ add_config_once "CONFIG_LUCI_LANG_zh_Hans=y"
 add_config_once "CONFIG_PACKAGE_luci-theme-$WRT_THEME=y"
 add_config_once "CONFIG_PACKAGE_luci-app-$WRT_THEME-config=y"
 
-#==================== 11. 加载私有配置文件 ====================
+#==================== 11. 日志过滤：屏蔽内核qcom_rpm警告 ====================
+add_log_filter() {
+    local rsyslog="./package/base-files/files/etc/rsyslog.d/90-kernel-filter.conf"
+    mkdir -p $(dirname "$rsyslog")
+    cat > "$rsyslog" << 'EOF'
+:kern, contains, "qcom_rpm_smd_regulator" ~
+:kern, contains, "resolved to itself" ~
+EOF
+    green "✅ rsyslog 已屏蔽高通电源冗余内核日志"
+}
+add_log_filter
+
+#==================== 12. 加载私有配置文件 ====================
 if [ -f "$GITHUB_WORKSPACE/Config/PRIVATE.txt" ]; then
     green "Applying private configurations from PRIVATE.txt..."
     cat "$GITHUB_WORKSPACE/Config/PRIVATE.txt" >> ./.config
 fi
 
-#==================== 12. 追加手动输入自定义插件参数 ====================
+#==================== 13. 追加手动输入自定义插件参数 ====================
 if [ -n "$WRT_PACKAGE" ]; then
     echo -e "$WRT_PACKAGE" >> ./.config
 fi
 
-#==================== 13. 标记无 WiFi 编译环境变量 ====================
+#==================== 14. 标记无 WiFi 编译环境变量 ====================
 if [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
     echo "WRT_WIFI=wifi-no" >> $GITHUB_ENV
     green "✅ WiFi 已标记为禁用"
 fi
 
-#==================== 14. 高通 qualcommax 无 WiFi DTS 适配 ====================
+#==================== 15. 高通 qualcommax 无 WiFi DTS 适配 ====================
 DTS_PATH="./target/linux/qualcommax/dts/"
 if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]]; then
     if [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
@@ -214,7 +226,7 @@ if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]]; then
     fi
 fi
 
-#==================== 15. 验证清理结果 ====================
+#==================== 16. 验证清理结果 ====================
 verify_cleanup() {
     local config_file="./.config"
     local conflicts=(
@@ -249,7 +261,9 @@ verify_cleanup
 green ""
 green "========================================"
 green "===== 全部预配置脚本执行完毕 ====="
+green "✅ block组件彻底删除，fstab报错永久消失"
+green "✅ hostapd迁移到/tmp目录，rmdir权限错误根除"
+green "✅ rsyslog拦截qcom_rpm内核冗余日志"
 green "✅ 适配IPQ6018 AHB内置WiFi，移除PCI无效代码"
 green "✅ 缓解AHB总线争抢，减少excessive missing ACK掉线"
-green "✅ 无重复配置，无多余驱动重载"
 green "========================================"
