@@ -72,7 +72,20 @@ STOP=10
 boot() { start; }
 
 start() {
-    # === fstab 目录修复 ===
+    # === 创建 fstab 配置（解决 block: Entry not found） ===
+    mkdir -p /etc/config
+    cat > /etc/config/fstab << 'FSTAB'
+config global
+    option anon_swap '0'
+    option anon_mount '0'
+    option auto_swap '1'
+    option auto_mount '1'
+    option delay_root '5'
+    option check_fs '0'
+FSTAB
+    
+    # === 清理旧 socket + 修复 hostapd 目录权限（解决 Permission denied） ===
+    rm -rf /var/run/hostapd/* 2>/dev/null
     mkdir -p /var/run/hostapd
     chown root:root /var/run/hostapd
     chmod 755 /var/run/hostapd
@@ -570,7 +583,7 @@ green ""
 green "========================================"
 green "===== 全部预配置脚本执行完毕 ====="
 green "========================================"
-green "✅ 已修复：fstab / hostapd / 时间戳"
+green "✅ 已修复：fstab / hostapd（含清理旧socket）/ 时间戳"
 green "✅ 已清理：日志（启动清空 + POLL过滤）"
 green "✅ 已优化：NSS PBUF / 硬加速 / RPS/XPS"
 green "✅ IRQ 自动适应 CPU 核心数"
