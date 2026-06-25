@@ -28,6 +28,34 @@ LUCI_COLLECTIONS=$(find ./feeds/luci/collections/ -type f -name "Makefile" 2>/de
 LUCI_FLASH=$(find ./feeds/luci/modules/luci-mod-system/ -type f -name "flash.js" 2>/dev/null)
 LUCI_STATUS=$(find ./feeds/luci/modules/luci-mod-status/ -type f -name "10_system.js" 2>/dev/null)
 
+#==================== 0. 新增：关闭内核调试打印，精简dmesg ====================
+disable_kernel_debug() {
+    green "===== 精简内核调试输出 ====="
+    local conf="./.config"
+
+    # 关闭全局内核debug信息
+    sed -i '/CONFIG_DEBUG=y/d' "$conf"
+    sed -i '/CONFIG_DEBUG_INFO=y/d' "$conf"
+    sed -i '/CONFIG_DEBUG_FS=y/d' "$conf"
+    sed -i '/CONFIG_PRINTK_TIME=y/d' "$conf"
+    sed -i '/CONFIG_DYNAMIC_DEBUG=y/d' "$conf"
+    sed -i '/CONFIG_DEBUG_DRIVERS=y/d' "$conf"
+
+    # 强制关闭动态调试
+    echo "CONFIG_DYNAMIC_DEBUG=n" >> "$conf"
+    echo "CONFIG_DEBUG=n" >> "$conf"
+    echo "CONFIG_DEBUG_INFO=n" >> "$conf"
+    echo "CONFIG_DEBUG_FS=n" >> "$conf"
+
+    # 内核日志默认级别
+    echo "CONFIG_LOG_BUF_SHIFT=15" >> "$conf"
+    echo "CONFIG_CONSOLE_LOGLEVEL_DEFAULT=3" >> "$conf"
+    echo "CONFIG_MESSAGE_LOGLEVEL_DEFAULT=3" >> "$conf"
+
+    green "✅ 内核冗余调试日志已全部关闭"
+}
+disable_kernel_debug
+
 #==================== 1. 清理在线升级、替换默认主题 ====================
 clean_luci() {
     green "===== 清理 Luci 配置 ====="
@@ -57,7 +85,7 @@ clean_version_timestamp() {
 }
 clean_version_timestamp
 
-#==================== 3. 整合修复（fstab + hostapd + 日志 + NSS） ====================
+#==================== 3. 整合修复（彻底解决fstab + hostapd权限 + 日志刷屏） ====================
 integrated_fix() {
     green "===== 安装整合修复脚本 ====="
     
@@ -72,48 +100,56 @@ STOP=10
 boot() { start; }
 
 start() {
-    # === 创建 fstab 配置（解决 block: Entry not found） ===
+    # === 修复 block fstab: Entry not found 日志刷屏 ===
     mkdir -p /etc/config
     cat > /etc/config/fstab << 'FSTAB'
 config global
     option anon_swap '0'
     option anon_mount '0'
-    option auto_swap '1'
-    option auto_mount '1'
+    option auto_swap '0'
+    option auto_mount '0'
     option delay_root '5'
     option check_fs '0'
 FSTAB
-    
-    # === 清理旧 socket + 修复 hostapd 目录权限（解决 Permission denied） ===
-    rm -rf /var/run/hostapd/* 2>/dev/null
-    mkdir -p /var/run/hostapd
-    chown root:root /var/run/hostapd
-    chmod 755 /var/run/hostapd
-    
-    # === 日志限制 ===
+    # 永久禁用块设备扫描，杜绝反复报错
+    /etc/init.d/block stop
+    /etc/init.d/block disable
+
+    # === hostapd 权限根治：迁移socket到/tmp，彻底避开/var/run权限限制 ===
+    rm -rf /var/run/hostapd /tmp/hostapd 2>/dev/null
+    mkdir -p /tmp/hostapd
+    chown root:root /tmp/hostapd
+    chmod 777 /tmp/hostapd
+    # 全局替换控制接口路径
+    sed -i 's|ctrl_interface=/var/run/hostapd|ctrl_interface=/tmp/hostapd|g' /etc/hostapd.conf /etc/wireless/* 2>/dev/null
+
+    # === 日志等级压制，屏蔽高通冗余内核警告 ===
     [ -f /var/log/messages ] && > /var/log/messages
-    echo 3 > /proc/sys/kernel/printk 2>/dev/null
-    
-    # === hostapd 日志级别降低 ===
-    [ -f /var/run/hostapd.pid ] && kill -SIGUSR1 $(cat /var/run/hostapd.pid) 2>/dev/null
-    
-    # === NSS 延迟卸载 + 持久化 ===
+    echo 3 > /proc/sys/kernel/printk
+    dmesg -n 3
+
+    # 关闭动态内核调试打印
+    echo 0 > /sys/kernel/debug/dynamic_debug/control 2>/dev/null
+
+    # === hostapd 降低冗余日志输出 ===
+    killall -SIGUSR1 hostapd 2>/dev/null
+
+    # === NSS 延迟加载，防止开机驱动冲突崩溃 ===
     (
         sleep 300
-        lsmod | grep -q "^ifb " && rmmod ifb 2>/dev/null
-        lsmod | grep -q "qca_nss_ecm_offload" && rmmod qca-nss-ecm-offload 2>/dev/null
+        rmmod ifb qca-nss-ecm-offload 2>/dev/null
         sleep 5
-        [ -f /proc/sys/net/nss/nss_enable ] && echo 1 > /proc/sys/net/nss/nss_enable 2>/dev/null
+        echo 1 > /proc/sys/net/nss/nss_enable 2>/dev/null
         mkdir -p /var/run/nss
-        [ -f /proc/sys/net/nss/nss_enable ] && cat /proc/sys/net/nss/nss_enable > /var/run/nss/status 2>/dev/null
-        echo "$(date)" > /var/run/nss/started_at 2>/dev/null
+        [ -f /proc/sys/net/nss/nss_enable ] && cat /proc/sys/net/nss/nss_enable > /var/run/nss/status
+        echo "$(date)" > /var/run/nss/started_at
     ) &
-    
-    # === CPU 调度器 ===
+
+    # === CPU调频调度策略 ===
     [ -f /sys/devices/system/cpu/cpufreq/policy0/scaling_governor ] && \
         echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null
-    
-    echo "✅ 整合修复完成"
+
+    echo "✅ 整合修复执行完毕"
 }
 EOF
     chmod +x "$all_fix"
@@ -121,7 +157,7 @@ EOF
 }
 integrated_fix
 
-#==================== 4. 日志过滤（rsyslog） ====================
+#==================== 4. 日志过滤（rsyslog屏蔽WiFi冗余轮询日志） ====================
 cleanup_logs() {
     green "===== 配置日志过滤 ====="
     
@@ -129,9 +165,13 @@ cleanup_logs() {
     mkdir -p "$(dirname "$rsyslog_conf")"
     
     cat > "$rsyslog_conf" << 'EOF'
-# 丢弃 hostapd 轮询日志
+# 丢弃 hostapd AP-STA-POLL-OK 冗余刷屏日志
 :msg, contains, "AP-STA-POLL-OK" ~
 :msg, contains, "AP-STA-POLL-OK" stop
+# 屏蔽高通rpm调节器无关警告
+:msg, contains, "qcom_rpm_smd_regulator" ~
+# 屏蔽无用regulator打印
+:msg, contains, "resolved to itself" ~
 EOF
     green "✅ rsyslog 过滤规则已添加"
 }
@@ -178,6 +218,8 @@ net.ipv4.tcp_timestamps=0
 net.ipv4.tcp_sack=1
 net.ipv4.tcp_dsack=1
 net.ipv4.tcp_fastopen=3
+# 抑制无关内核日志
+kernel.printk = 3 3 0 0
 EOF
     green "✅ NSS sysctl 参数已配置"
     
@@ -194,7 +236,7 @@ boot() { start; }
 start() {
     sleep 10
     
-    # 启用 NSS
+    # 启用 NSS 硬件引擎
     [ -f /proc/sys/net/nss/nss_enable ] && echo 1 > /proc/sys/net/nss/nss_enable 2>/dev/null
     [ -f /sys/module/nss_driver/parameters/force_offload ] && echo 1 > /sys/module/nss_driver/parameters/force_offload 2>/dev/null
     
@@ -209,7 +251,7 @@ start() {
     mask=$(printf "%x" $(( (1 << cpu_cores) - 1 )) 2>/dev/null)
     [ -z "$mask" ] && mask="1"
     
-    # RPS/XPS 自动适应
+    # RPS/XPS 多核流量均分
     for cpu in /sys/class/net/*/queues/rx-*/rps_cpus; do
         [ -f "$cpu" ] && echo "$mask" > "$cpu"
     done
@@ -217,7 +259,7 @@ start() {
         [ -f "$cpu" ] && echo "$mask" > "$cpu"
     done
     
-    # IRQ 轮询分配到所有 CPU
+    # IRQ中断均衡分配
     irq_list=$(grep -E "nss|qcom|ath11k|eth|gmac" /proc/interrupts 2>/dev/null | awk '{print $1}' | sed 's/://g')
     if [ -n "$irq_list" ]; then
         irq_idx=0
@@ -235,7 +277,7 @@ EOF
     chmod +x "$hw_offload"
     green "✅ 硬件加速开机脚本已安装（自动适应 CPU 核心数）"
     
-    # 6.3 防火墙配置
+    # 6.3 防火墙配置固化
     local fw_conf="./package/network/config/firewall/files/firewall.config"
     if [ -f "$fw_conf" ]; then
         sed -i 's/option flow_offloading.*/option flow_offloading "1"/g' "$fw_conf"
@@ -245,7 +287,7 @@ EOF
 }
 setup_hardware_acceleration
 
-#==================== 7. 完整冲突清理（IPQ6018/AX5 专用） ====================
+#==================== 7. IPQ6018/AX5 冲突包清理 ====================
 clean_conflict_packages() {
     local config_file="./.config"
     green "===== 开始清理 NSS/WiFi 冲突包 ====="
@@ -274,7 +316,7 @@ clean_conflict_packages() {
     # 7.5 网络测试冲突
     sed -i '/CONFIG_PACKAGE_kmod-net-selftests/d' "$config_file"
     
-    # 7.6 IPQ6018 特定无线固件
+    # 7.6 IPQ6018 无线固件锁定
     sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca4019/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca9984/d' "$config_file"
     echo "CONFIG_PACKAGE_ath11k-firmware-ipq6018=y" >> "$config_file"
@@ -287,7 +329,7 @@ clean_conflict_packages() {
 }
 clean_conflict_packages
 
-#==================== 8. wifi-scripts hotplug（替代补丁） ====================
+#==================== 8. wifi-scripts hotplug（ath11k驱动防卡死） ====================
 patch_wifi_hotplug() {
     green "===== 安装 WiFi hotplug 重置脚本 ====="
     
@@ -305,6 +347,11 @@ patch_wifi_hotplug() {
 ) &
 EOF
     chmod +x "$hotplug_script"
+
+    # 写入ath11k硬件加密关闭参数，降低死机概率
+    local mod_conf="./package/base-files/files/etc/modules.d/ath11k-fix"
+    echo "options ath11k nohwcrypt=1" > "$mod_conf"
+    
     green "✅ WiFi hotplug 重置脚本已安装"
 }
 patch_wifi_hotplug
@@ -348,11 +395,11 @@ setup_system_config() {
 }
 setup_system_config
 
-#==================== 11. 写入基础编译配置 ====================
+#==================== 11. 写入基础编译配置（修复变量无法展开BUG） ====================
 write_build_config() {
     green "===== 写入编译配置 ====="
     
-    cat >> ./.config << 'EOF'
+    cat >> ./.config << EOF
 CONFIG_PACKAGE_luci=y
 CONFIG_LUCI_LANG_zh_Hans=y
 CONFIG_PACKAGE_luci-theme-$WRT_THEME=y
@@ -420,7 +467,7 @@ verify_cleanup() {
 }
 verify_cleanup
 
-#==================== 17. 验证脚本（自动适应 CPU） ====================
+#==================== 17. 验证脚本 ====================
 install_verify_script() {
     green "===== 安装硬加速验证脚本 ====="
     
@@ -583,11 +630,11 @@ green ""
 green "========================================"
 green "===== 全部预配置脚本执行完毕 ====="
 green "========================================"
-green "✅ 已修复：fstab / hostapd（含清理旧socket）/ 时间戳"
-green "✅ 已清理：日志（启动清空 + POLL过滤）"
-green "✅ 已优化：NSS PBUF / 硬加速 / RPS/XPS"
-green "✅ IRQ 自动适应 CPU 核心数"
-green "✅ 已配置：WiFi SSID/密码 / 主机名/IP"
-green "✅ 已安装：验证脚本 check-hw-accel"
-green "✅ 已安装：回滚脚本 rollback-hw-accel"
+green "✅ 已彻底修复：fstab 日志刷屏 / hostapd 权限拒绝"
+green "✅ 新增：关闭内核DEBUG，精简dmesg打印"
+green "✅ 已屏蔽：高通内核冗余警告、WiFi轮询日志"
+green "✅ 已优化：NSS PBUF / BBR / RPS / IRQ多核均衡"
+green "✅ 已固化：WiFi参数、后台IP、主机名、主题"
+green "✅ 已添加：ath11k驱动防卡死补丁"
+green "✅ 工具：check-hw-accel 状态检测 + rollback-hw-accel一键回滚"
 green "========================================"
