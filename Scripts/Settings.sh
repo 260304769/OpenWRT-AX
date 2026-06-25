@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
-# OpenWrt NSS IPQ60xx 编译预处理脚本 v3.3 FINAL
+# OpenWrt NSS IPQ60xx 编译预处理脚本 v3.4 FINAL
 
 #=========================================================
 # 0. 全局配置与工具函数
@@ -35,39 +35,31 @@ readonly MARKER_START="# >>> VIKINGYFY AUTO CONFIG START >>>"
 readonly MARKER_END="# <<< VIKINGYFY AUTO CONFIG END <<<"
 
 #=========================================================
-# 架构判断（v3.3 增强：环境变量 + .config 双源检测）
+# 架构判断（v3.4：环境变量 + .config 双源检测）
 #=========================================================
 IS_IPQ60() {
-    # 第一优先级：检查环境变量 WRT_TARGET
     if [[ "${WRT_TARGET:-}" =~ ^ipq60 ]]; then
         debug "架构判断: WRT_TARGET=${WRT_TARGET} -> IPQ60xx"
         return 0
     fi
-
-    # 第二优先级：从 .config 文件回退检测
     if [ -f "$CONFIG_FILE" ]; then
-        # 精确匹配 qualcommax_ipq60xx
         if grep -q "CONFIG_TARGET_qualcommax_ipq60xx=y" "$CONFIG_FILE" 2>/dev/null; then
             debug "架构判断: .config 检测到 CONFIG_TARGET_qualcommax_ipq60xx=y -> IPQ60xx"
             return 0
         fi
-        # 模糊匹配其他 ipq60 变体（ipq6000/ipq6010/ipq6018/ipq6028 等）
         if grep -qE "CONFIG_TARGET.*ipq60[0-9]*.*=y" "$CONFIG_FILE" 2>/dev/null; then
             debug "架构判断: .config 检测到 IPQ60 系列平台"
             return 0
         fi
     fi
-
     debug "架构判断: 非 IPQ60xx 平台"
     return 1
 }
 
 #=========================================================
-# 1. 工具函数（v3.2 修复版）
+# 1. 工具函数
 #=========================================================
 
-# safe_find：路径 + 命令 + 参数 + find条件
-# 用法: safe_find <path> <exec_cmd> <exec_arg> [find_args...]
 safe_find() {
     local path="$1"
     local exec_cmd="$2"
@@ -80,7 +72,6 @@ safe_find() {
     fi
 }
 
-# 安全sed操作
 safe_sed() {
     local file="$1"
     local pattern="$2"
@@ -91,7 +82,6 @@ safe_sed() {
     fi
 }
 
-# 安全创建目录
 safe_mkdir() {
     local dir="$1"
     if [ ! -d "$dir" ]; then
@@ -102,8 +92,6 @@ safe_mkdir() {
     fi
 }
 
-# safe_write_file：从标准输入读取，支持原生here-doc
-# 用法: cat <<-'EOF' | safe_write_file "/path/to/file"
 safe_write_file() {
     local file="$1"
     local dir
@@ -116,7 +104,6 @@ safe_write_file() {
     debug "已写入: $file"
 }
 
-# 变量校验
 check_vars() {
     local required_vars=("WRT_IP" "WRT_NAME" "WRT_SSID" "WRT_WORD" "WRT_THEME" "WRT_MARK" "WRT_DATE" "WRT_TARGET")
     local missing=()
@@ -133,7 +120,6 @@ check_vars() {
     fi
     green "所有必要变量已定义"
 
-    # 架构检测结果汇总
     if IS_IPQ60; then
         green "检测到 IPQ60xx 平台，将启用 NSS 硬件加速相关配置"
     else
@@ -146,41 +132,32 @@ check_vars() {
     fi
 }
 
-# 清理.config中的自动配置段
 clean_config_file() {
     green "===== 清理自动配置段 ====="
-    
     if [ -f "$CONFIG_FILE" ]; then
         sed -i "/${MARKER_START}/,/${MARKER_END}/d" "$CONFIG_FILE" 2>/dev/null || true
         green "✅ 已清除之前的自动配置"
     fi
-    
     echo "$MARKER_START" >> "$CONFIG_FILE"
 }
 
-# 写入.config条目（防止重复）
 write_config_entry() {
     local entry="$1"
     local config_file="${2:-$CONFIG_FILE}"
-    
     local pkg_name
     pkg_name=$(echo "$entry" | sed 's/^# //;s/ is not set$//;s/^CONFIG_PACKAGE_//;s/=.*//')
-    
     if [ -n "$pkg_name" ]; then
         sed -i "/CONFIG_PACKAGE_${pkg_name}[= ]/d" "$config_file" 2>/dev/null || true
     fi
-    
     echo "$entry" >> "$config_file"
     debug "写入配置: $entry"
 }
 
-# 写入标记段结束
 finalize_config_file() {
     echo "$MARKER_END" >> "$CONFIG_FILE"
     green "✅ 配置段标记完成"
 }
 
-# 加载私有配置
 load_private_config() {
     local private_configs=()
     if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -f "$GITHUB_WORKSPACE/Config/PRIVATE.txt" ]; then
@@ -192,12 +169,10 @@ load_private_config() {
     if [ -f "./PRIVATE.txt" ]; then
         private_configs+=("./PRIVATE.txt")
     fi
-    
     for config in "${private_configs[@]}"; do
         green "加载私有配置: $config"
         cat "$config" >> "$CONFIG_FILE"
     done
-    
     [ ${#private_configs[@]} -eq 0 ] && yellow "未找到私有配置文件 (PRIVATE.txt)"
 }
 
@@ -206,19 +181,15 @@ load_private_config() {
 #=========================================================
 cleanup_logs() {
     green "===== 清理编译残留日志 ====="
-    
     rm -rf ./logs/ ./tmp/ 2>/dev/null || true
     rm -f ./build.log ./feeds/*.log 2>/dev/null || true
-    
     safe_find . rm -f -type f -name "*.log" -size +1M
     safe_find ./package rm -f -type f -name "*.dmesg"
     safe_find ./target rm -f -type f -name "*.dmesg"
-    
     safe_mkdir "$ETC_DIR"
     cat <<-'EOF' | safe_write_file "${ETC_DIR}/syslog.conf"
 # 空配置，防止默认日志写入固件
 EOF
-    
     safe_mkdir "${ETC_DIR}/logrotate.d"
     cat <<-'EOF' | safe_write_file "${ETC_DIR}/logrotate.d/openwrt"
 /var/log/*.log {
@@ -237,7 +208,6 @@ EOF
 #=========================================================
 clean_system_config() {
     green "===== 清理系统配置 ====="
-    
     local luci_files
     luci_files=$(find ./feeds/luci/collections -type f -name "Makefile" 2>/dev/null || true)
     if [ -n "$luci_files" ]; then
@@ -247,7 +217,6 @@ clean_system_config() {
             sed -i "s/luci-theme-bootstrap/luci-theme-$WRT_THEME/g" "$f" 2>/dev/null || true
         done
     fi
-    
     local flash_js
     flash_js=$(find ./feeds/luci/modules/luci-mod-system -type f -name "flash.js" 2>/dev/null || true)
     if [ -n "$flash_js" ]; then
@@ -255,7 +224,6 @@ clean_system_config() {
             [ -f "$f" ] && sed -i "s/192\.168\.[0-9]*\.[0-9]*/${WRT_IP}/g" "$f" 2>/dev/null || true
         done
     fi
-    
     local system_js
     system_js=$(find ./feeds/luci/modules/luci-mod-status -type f -name "10_system.js" 2>/dev/null || true)
     if [ -n "$system_js" ]; then
@@ -271,7 +239,6 @@ clean_system_config() {
 #=========================================================
 clean_version_timestamp() {
     green "===== 清理版本时间戳 ====="
-    
     local release="${BASE_FILES}/etc/openwrt_release"
     if [ -f "$release" ]; then
         safe_sed "$release" 's|/ [0-9]\{9\}-[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}-[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}||g'
@@ -287,7 +254,6 @@ clean_version_timestamp() {
 #=========================================================
 fix_boot_errors() {
     green "===== 修复启动错误 + 防止日志刷屏 ====="
-    
     safe_mkdir "${CONFIG_DIR}"
     cat <<-'EOF' | safe_write_file "${CONFIG_DIR}/fstab"
 config global
@@ -298,12 +264,10 @@ config global
     option delay_root '5'
     option check_fs '0'
 EOF
-    
     cat <<-'EOF' | safe_write_file "${INIT_DIR}/hostapd-prepare"
 #!/bin/sh /etc/rc.common
 START=40
 STOP=90
-
 start() {
     mkdir -p /var/run/hostapd
     chown root:root /var/run/hostapd
@@ -312,7 +276,6 @@ start() {
 }
 EOF
     chmod +x "${INIT_DIR}/hostapd-prepare"
-    
     safe_mkdir "${ETC_DIR}/rsyslog.d"
     cat <<-'EOF' | safe_write_file "${ETC_DIR}/rsyslog.d/10-hostapd-filter.conf"
 :msg, contains, "AP-STA-POLL-OK" ~
@@ -320,7 +283,6 @@ EOF
 if $programname == 'hostapd' and $syslogseverity <= 3 then /var/log/hostapd.log
 & ~
 EOF
-    
     safe_mkdir "${ETC_DIR}/hostapd"
     cat <<-'EOF' | safe_write_file "${ETC_DIR}/hostapd/hostapd.conf"
 logger_syslog=-1
@@ -328,7 +290,6 @@ logger_syslog_level=1
 logger_stdout=-1
 logger_stdout_level=1
 EOF
-    
     safe_mkdir "${ETC_DIR}/sysctl.d"
     cat <<-'EOF' | safe_write_file "${ETC_DIR}/sysctl.d/10-log-levels.conf"
 kernel.printk = 3 3 1 7
@@ -342,15 +303,12 @@ EOF
 #=========================================================
 configure_network_affinity() {
     green "===== 配置网口自适应RPS/XPS热插拔 ====="
-    
     safe_mkdir "${HOTPLUG_DIR}/net"
     cat <<-'EOF' | safe_write_file "${HOTPLUG_DIR}/net/20-nss-queue"
 #!/bin/sh
 [ "$ACTION" = "add" ] || exit 0
-
 CPU_COUNT=$(nproc 2>/dev/null || echo 4)
 CPU_MASK_ALL=$(printf "%x" $(( (1 << CPU_COUNT) - 1 )))
-
 generate_cpu_mask() {
     local cpu_total=$1
     local mask_type=$2
@@ -368,7 +326,6 @@ generate_cpu_mask() {
         *) echo "$CPU_MASK_ALL" ;;
     esac
 }
-
 get_interface_type() {
     local iface="$1"
     if [ -d "/sys/class/net/$iface/bridge" ]; then echo "bridge"; return; fi
@@ -390,13 +347,11 @@ get_interface_type() {
             ;;
     esac
 }
-
 configure_interface() {
     local iface="$1"
     case "$iface" in lo|ifb*|gre*|tun*|tap*|veth*|docker*) return ;; esac
     local iface_type=$(get_interface_type "$iface")
     local cpu_mask=$(generate_cpu_mask $CPU_COUNT "$iface_type")
-
     [ -d "/sys/class/net/$iface/queues" ] && {
         for rxq in /sys/class/net/$iface/queues/rx-*/rps_cpus; do
             [ -f "$rxq" ] && echo "$cpu_mask" > "$rxq" 2>/dev/null
@@ -409,31 +364,26 @@ configure_interface() {
             [ -f "$txq" ] && echo "$cpu_mask" > "$txq" 2>/dev/null
         done
     }
-
     if [ "$iface_type" = "wan" ]; then
         [ -f "/sys/class/net/$iface/tx_queue_len" ] && echo 10000 > "/sys/class/net/$iface/tx_queue_len" 2>/dev/null
         ethtool -K "$iface" tso on gso on gro on 2>/dev/null
         max_q=$(ethtool -l "$iface" 2>/dev/null | grep -A5 "Pre-set maximums" | grep Combined | awk '{print $2}' || echo 1)
         [ "$max_q" -gt 1 ] 2>/dev/null && ethtool -L "$iface" combined $((CPU_COUNT < max_q ? CPU_COUNT : max_q)) 2>/dev/null
     fi
-
     if [ "$iface_type" = "bridge" ]; then
         echo 0 > /sys/class/net/$iface/bridge/multicast_querier 2>/dev/null
         echo 300 > /sys/class/net/$iface/bridge/ageing_time 2>/dev/null
         echo 0 > /sys/class/net/$iface/bridge/forward_delay 2>/dev/null
     fi
 }
-
 echo 65536 > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
 for iface_path in /sys/class/net/*; do
     [ -d "$iface_path" ] || continue
     configure_interface "$(basename "$iface_path")"
 done
-
 sysctl -w net.core.netdev_budget=600 net.core.netdev_budget_usecs=8000 net.core.busy_poll=50 net.core.busy_read=50 2>/dev/null
 EOF
     chmod +x "${HOTPLUG_DIR}/net/20-nss-queue"
-    
     cat <<-'EOF' | safe_write_file "${INIT_DIR}/network-affinity"
 #!/bin/sh /etc/rc.common
 START=20
@@ -447,8 +397,6 @@ start() {
 }
 EOF
     chmod +x "${INIT_DIR}/network-affinity"
-    
-    # 网络配置由其他脚本负责，此处不生成 /etc/config/network
     green "✅ 网口自适应热插拔配置完成（网络配置由外部脚本管理）"
 }
 
@@ -507,7 +455,6 @@ EOF
 configure_hardware_acceleration() {
     if ! IS_IPQ60; then yellow "非IPQ60架构，跳过全套NSS加速配置"; return; fi
     green "===== 配置网络硬加速 ====="
-    
     cat <<-'EOF' | safe_write_file "${CONFIG_DIR}/ecm"
 config ecm
     option enable '1'
@@ -522,7 +469,6 @@ config ecm
     option enable_vlan '1'
     option enable_pppoe '1'
 EOF
-    
     safe_mkdir "${ETC_DIR}/sysctl.d"
     cat <<-'EOF' | safe_write_file "${ETC_DIR}/sysctl.d/20-nss-performance.conf"
 net.core.rmem_default = 87380
@@ -561,7 +507,6 @@ net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
 net.netfilter.nf_conntrack_tcp_timeout_close_wait = 30
 net.nf_conntrack_max = 65536
 EOF
-    
     cat <<-'EOF' | safe_write_file "${INIT_DIR}/irq-affinity"
 #!/bin/sh /etc/rc.common
 START=99
@@ -577,7 +522,6 @@ start() {
 }
 EOF
     chmod +x "${INIT_DIR}/irq-affinity"
-    
     safe_mkdir "${BASE_FILES}/usr/bin"
     cat <<-'EOF' | safe_write_file "${BASE_FILES}/usr/bin/nss-status"
 #!/bin/sh
@@ -592,10 +536,10 @@ EOF
 }
 
 #=========================================================
-# 10. 软件冲突卸载 + 无用包清理
+# 10. 软件冲突卸载 + 无用包清理 + 依赖修复
 #=========================================================
 clean_unused_packages() {
-    green "===== 卸载冲突软件 + 清理无用包 ====="
+    green "===== 卸载冲突软件 + 清理无用包 + 修复依赖 ====="
     
     local conflict_packages=(
         "kmod-qca-nss-drv-wifi-meshmgr" "wpad-basic" "wpad-mesh" "wpad-mini"
@@ -607,6 +551,7 @@ clean_unused_packages() {
         "ath10k-firmware-qca6174" "ath10k-firmware-qca988x" "kmod-ath9k"
         "kmod-ath9k-common" "kmod-ath5k" "kmod-ath6kl" "kmod-brcmsmac"
         "kmod-b43" "kmod-fast-classifier" "kmod-shortcut-fe"
+        "sdl3" "libwayland"
     )
     
     local unused_packages=(
@@ -621,6 +566,12 @@ clean_unused_packages() {
         "kmod-fs-hfs" "kmod-fs-hfsplus" "kmod-fs-isofs" "kmod-fs-udf"
         "kmod-usb-storage" "kmod-usb-storage-extras" "kmod-usb-storage-uas"
         "gdb" "strace" "ltrace" "valgrind" "kmod-can"
+    )
+    
+    # 依赖修复映射表
+    declare -A dependency_fix=(
+        ["luci-app-zerotier"]="zerotier"
+        ["zram-swap"]="kmod-zram"
     )
     
     double_remove_package() {
@@ -656,7 +607,22 @@ clean_unused_packages() {
             echo "  ✅ 通配清理: $p"
         done
     done
-    green "✅ 软件冲突卸载 + 无用包清理完成"
+    
+    # v3.4 新增：自动修复依赖
+    green "--- 自动修复已知依赖 ---"
+    for app in "${!dependency_fix[@]}"; do
+        local dep="${dependency_fix[$app]}"
+        if grep -q "CONFIG_PACKAGE_${app}=y" "$CONFIG_FILE" 2>/dev/null; then
+            if ! grep -q "CONFIG_PACKAGE_${dep}=y" "$CONFIG_FILE" 2>/dev/null; then
+                write_config_entry "CONFIG_PACKAGE_${dep}=y"
+                echo "  ✅ 自动添加依赖: ${app} -> ${dep}"
+            else
+                debug "依赖已存在: ${app} -> ${dep}"
+            fi
+        fi
+    done
+    
+    green "✅ 软件冲突卸载 + 无用包清理 + 依赖修复完成"
 }
 
 #=========================================================
@@ -720,8 +686,7 @@ EOF
 }
 
 set_wifi_params() {
-    green "===== 固化 WiFi 参数 ====="
-    local WIFI_UC="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
+    green "===== 固化 WiFi 参数 ====="    local WIFI_UC="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
     if [ -f "$WIFI_UC" ]; then
         safe_sed "$WIFI_UC" "s/ssid='[^']*'/ssid='$WRT_SSID'/g"
         safe_sed "$WIFI_UC" "s/key='[^']*'/key='$WRT_WORD'/g"
@@ -775,7 +740,55 @@ append_custom_packages() {
 }
 
 #=========================================================
-# 16. 验证清理结果
+# 16. 编译前最终检查与修复
+#=========================================================
+pre_build_check() {
+    green "===== 编译前最终检查 ====="
+    
+    # 1. 检查 wpad 冲突
+    local wpad_count=$(grep -c "CONFIG_PACKAGE_wpad.*=y" "$CONFIG_FILE" 2>/dev/null || echo 0)
+    if [ "$wpad_count" -gt 1 ]; then
+        yellow "检测到多个 wpad 变体，只保留 wpad-openssl"
+        sed -i '/CONFIG_PACKAGE_wpad-basic/d' "$CONFIG_FILE" 2>/dev/null || true
+        sed -i '/CONFIG_PACKAGE_wpad-mesh/d' "$CONFIG_FILE" 2>/dev/null || true
+        sed -i '/CONFIG_PACKAGE_wpad-mini/d' "$CONFIG_FILE" 2>/dev/null || true
+        grep -q "CONFIG_PACKAGE_wpad-openssl=y" "$CONFIG_FILE" 2>/dev/null || echo "CONFIG_PACKAGE_wpad-openssl=y" >> "$CONFIG_FILE"
+    fi
+    
+    # 2. 检查 sdl3/wayland 冲突
+    if grep -q "CONFIG_PACKAGE_sdl3=y" "$CONFIG_FILE" 2>/dev/null; then
+        yellow "检测到 sdl3（已知有依赖问题），自动禁用"
+        sed -i '/CONFIG_PACKAGE_sdl3/d' "$CONFIG_FILE" 2>/dev/null || true
+        echo "# CONFIG_PACKAGE_sdl3 is not set" >> "$CONFIG_FILE"
+        sed -i '/CONFIG_PACKAGE_libwayland/d' "$CONFIG_FILE" 2>/dev/null || true
+        echo "# CONFIG_PACKAGE_libwayland is not set" >> "$CONFIG_FILE"
+    fi
+    
+    # 3. 检查 zerotier 依赖
+    if grep -q "CONFIG_PACKAGE_luci-app-zerotier=y" "$CONFIG_FILE" 2>/dev/null; then
+        if ! grep -q "CONFIG_PACKAGE_zerotier=y" "$CONFIG_FILE" 2>/dev/null; then
+            yellow "自动添加 zerotier 主程序依赖"
+            write_config_entry "CONFIG_PACKAGE_zerotier=y"
+        fi
+    fi
+    
+    # 4. 检查 zram-swap 依赖
+    if grep -q "CONFIG_PACKAGE_zram-swap=y" "$CONFIG_FILE" 2>/dev/null; then
+        if ! grep -q "CONFIG_PACKAGE_kmod-zram=y" "$CONFIG_FILE" 2>/dev/null; then
+            yellow "自动添加 kmod-zram 依赖"
+            write_config_entry "CONFIG_PACKAGE_kmod-zram=y"
+        fi
+    fi
+    
+    # 5. 同步配置
+    green "同步 make defconfig..."
+    make defconfig 2>/dev/null || true
+    
+    green "✅ 编译前检查完成"
+}
+
+#=========================================================
+# 17. 验证配置
 #=========================================================
 verify_cleanup() {
     echo ""
@@ -807,6 +820,7 @@ verify_cleanup() {
         "kmod-nft-offload"
         "kmod-fast-classifier"
         "kmod-shortcut-fe"
+        "sdl3"
     )
     
     green "【冲突包校验】"
@@ -819,6 +833,19 @@ verify_cleanup() {
             echo "✅ 已清理 $pkg"
         fi
     done
+    
+    # 依赖校验
+    green "【已知依赖校验】"
+    if grep -q "CONFIG_PACKAGE_luci-app-zerotier=y" "$CONFIG_FILE" 2>/dev/null; then
+        grep -q "CONFIG_PACKAGE_zerotier=y" "$CONFIG_FILE" 2>/dev/null \
+            && echo "✅ luci-app-zerotier -> zerotier" \
+            || echo "❌ luci-app-zerotier 缺少 zerotier 依赖"
+    fi
+    if grep -q "CONFIG_PACKAGE_zram-swap=y" "$CONFIG_FILE" 2>/dev/null; then
+        grep -q "CONFIG_PACKAGE_kmod-zram=y" "$CONFIG_FILE" 2>/dev/null \
+            && echo "✅ zram-swap -> kmod-zram" \
+            || echo "❌ zram-swap 缺少 kmod-zram 依赖"
+    fi
     
     # 架构检测来源验证
     green "【架构检测来源】"
@@ -836,12 +863,12 @@ verify_cleanup() {
 }
 
 #=========================================================
-# 17. 主执行流程
+# 18. 主执行流程
 #=========================================================
 main() {
     green ""
     green "========================================"
-    green "=== OpenWrt 编译预配置 v3.3 FINAL ==="
+    green "=== OpenWrt 编译预配置 v3.4 FINAL ==="
     green "=== 目标平台: ${WRT_TARGET} ==="
     green "=== 网关地址: ${WRT_IP} ==="
     green "========================================"
@@ -866,20 +893,26 @@ main() {
     load_private_config
     append_custom_packages
     
+    # v3.4 新增：编译前最终检查
+    pre_build_check
+    
     finalize_config_file
     verify_cleanup
     
     green ""
     green "========================================"
-    green "✅ v3.3 FINAL 执行完成"
-    green "修复项:"
+    green "✅ v3.4 FINAL 执行完成"
+    green "更新项:"
     green "1. safe_write_file 改用管道输入，支持原生here-doc"
     green "2. safe_find 参数传递修正，避免 xargs 嵌套"
     green "3. clean_system_config 移除 xargs 嵌套调用"
     green "4. IRQ亲和 + logger 错误抑制"
     green "5. nss-status 改用 /proc/stat 替代 top 命令"
     green "6. 网络配置由外部脚本管理，本脚本不覆盖"
-    green "7. ★ IS_IPQ60 双源检测：环境变量 + .config 回退"
+    green "7. IS_IPQ60 双源检测：环境变量 + .config 回退"
+    green "8. ★ 新增依赖自动修复（zerotier/zram-swap）"
+    green "9. ★ 新增冲突包 sdl3/libwayland 处理"
+    green "10. ★ 新增 pre_build_check 编译前最终检查"
     green "========================================"
 }
 
