@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
-# OpenWrt NSS IPQ60xx 编译预处理脚本 v3.4 FINAL
+# OpenWrt NSS IPQ60xx 编译预处理脚本 v3.5 FINAL
 
 #=========================================================
 # 0. 全局配置与工具函数
@@ -35,24 +35,20 @@ readonly MARKER_START="# >>> VIKINGYFY AUTO CONFIG START >>>"
 readonly MARKER_END="# <<< VIKINGYFY AUTO CONFIG END <<<"
 
 #=========================================================
-# 架构判断（v3.4：环境变量 + .config 双源检测）
+# 架构判断
 #=========================================================
 IS_IPQ60() {
     if [[ "${WRT_TARGET:-}" =~ ^ipq60 ]]; then
-        debug "架构判断: WRT_TARGET=${WRT_TARGET} -> IPQ60xx"
         return 0
     fi
     if [ -f "$CONFIG_FILE" ]; then
         if grep -q "CONFIG_TARGET_qualcommax_ipq60xx=y" "$CONFIG_FILE" 2>/dev/null; then
-            debug "架构判断: .config 检测到 CONFIG_TARGET_qualcommax_ipq60xx=y -> IPQ60xx"
             return 0
         fi
         if grep -qE "CONFIG_TARGET.*ipq60[0-9]*.*=y" "$CONFIG_FILE" 2>/dev/null; then
-            debug "架构判断: .config 检测到 IPQ60 系列平台"
             return 0
         fi
     fi
-    debug "架构判断: 非 IPQ60xx 平台"
     return 1
 }
 
@@ -77,8 +73,6 @@ safe_sed() {
     local pattern="$2"
     if [ -f "$file" ] && [ -w "$file" ]; then
         sed -i "$pattern" "$file" 2>/dev/null || yellow "无法修改: $file"
-    else
-        debug "跳过不存在的文件: $file"
     fi
 }
 
@@ -101,7 +95,18 @@ safe_write_file() {
         red "无法写入文件: $file"
         return 1
     }
-    debug "已写入: $file"
+}
+
+# 【修复1】提取包名的函数，过滤掉已禁用的条目
+extract_pkg_name() {
+    local entry="$1"
+    # 跳过已经以 # 开头的禁用条目
+    if [[ "$entry" =~ ^#\ CONFIG_PACKAGE_ ]]; then
+        echo ""
+        return
+    fi
+    # 从 CONFIG_PACKAGE_xxx=y 中提取包名
+    echo "$entry" | sed 's/^# //;s/ is not set$//;s/^CONFIG_PACKAGE_//;s/=.*//'
 }
 
 check_vars() {
@@ -124,11 +129,6 @@ check_vars() {
         green "检测到 IPQ60xx 平台，将启用 NSS 硬件加速相关配置"
     else
         yellow "当前目标 ${WRT_TARGET} 非 IPQ60xx，将跳过全部 NSS 硬件加速相关配置"
-        if [ -f "$CONFIG_FILE" ]; then
-            local detected_target
-            detected_target=$(grep -oE "CONFIG_TARGET_[A-Za-z0-9_]+=y" "$CONFIG_FILE" 2>/dev/null | head -1 | sed 's/CONFIG_TARGET_//;s/=y//' || echo "未知")
-            yellow ".config 检测到平台: ${detected_target}"
-        fi
     fi
 }
 
@@ -145,12 +145,11 @@ write_config_entry() {
     local entry="$1"
     local config_file="${2:-$CONFIG_FILE}"
     local pkg_name
-    pkg_name=$(echo "$entry" | sed 's/^# //;s/ is not set$//;s/^CONFIG_PACKAGE_//;s/=.*//')
+    pkg_name=$(extract_pkg_name "$entry")
     if [ -n "$pkg_name" ]; then
         sed -i "/CONFIG_PACKAGE_${pkg_name}[= ]/d" "$config_file" 2>/dev/null || true
     fi
     echo "$entry" >> "$config_file"
-    debug "写入配置: $entry"
 }
 
 finalize_config_file() {
@@ -397,7 +396,7 @@ start() {
 }
 EOF
     chmod +x "${INIT_DIR}/network-affinity"
-    green "✅ 网口自适应热插拔配置完成（网络配置由外部脚本管理）"
+    green "✅ 网口自适应热插拔配置完成"
 }
 
 #=========================================================
@@ -411,8 +410,6 @@ update_nss_pbuf_performance() {
         safe_sed "$conf" "s/auto_scale '1'/auto_scale 'off'/g"
         safe_sed "$conf" "s/scaling_governor 'performance'/scaling_governor 'schedutil'/g"
         green "✅ NSS PBUF优化完成"
-    else
-        yellow "NSS PBUF配置文件不存在，跳过优化"
     fi
 }
 
@@ -536,7 +533,7 @@ EOF
 }
 
 #=========================================================
-# 10. 软件冲突卸载 + 无用包清理 + 依赖修复
+# 10. 软件冲突卸载 + 无用包清理 + 依赖修复（v3.5修复）
 #=========================================================
 clean_unused_packages() {
     green "===== 卸载冲突软件 + 清理无用包 + 修复依赖 ====="
@@ -568,47 +565,59 @@ clean_unused_packages() {
         "gdb" "strace" "ltrace" "valgrind" "kmod-can"
     )
     
-    # 依赖修复映射表
     declare -A dependency_fix=(
         ["luci-app-zerotier"]="zerotier"
         ["zram-swap"]="kmod-zram"
     )
     
-    double_remove_package() {
+    # 【修复2】只删除 CONFIG_PACKAGE_xxx=y 行，不处理已禁用的条目
+    remove_package_config() {
         local pkg="$1"
-        sed -i "/CONFIG_PACKAGE_${pkg}[= ]/d" "$CONFIG_FILE" 2>/dev/null || true
+        # 只删除激活的配置行（=y），不碰已禁用的（is not set）
+        sed -i "/^CONFIG_PACKAGE_${pkg}=y$/d" "$CONFIG_FILE" 2>/dev/null || true
         write_config_entry "# CONFIG_PACKAGE_${pkg} is not set"
-        debug "双重清理: $pkg"
     }
     
-    green "--- 双重清理冲突包 ---"
+    green "--- 清理冲突包 ---"
     for pkg in "${conflict_packages[@]}"; do
-        double_remove_package "$pkg"
+        remove_package_config "$pkg"
         echo "  ✅ $pkg"
     done
     
-    green "--- 双重清理无用包 ---"
+    green "--- 清理无用包 ---"
     for pkg in "${unused_packages[@]}"; do
-        double_remove_package "$pkg"
+        remove_package_config "$pkg"
         echo "  ✅ $pkg"
     done
     
-    local wildcard_packages=(
-        "kmod-usb-serial-*"
-        "kmod-ir-*"
-        "kmod-can-*"
-        "kmod-qca-nss-drv-.*-mesh"
-        "kmod-qca-nss-drv-wifi"
+    # 【修复3】通配清理：从 .config 中提取匹配的包名，过滤掉已禁用的条目
+    green "--- 通配清理 ---"
+    local wildcard_patterns=(
+        "CONFIG_PACKAGE_kmod-usb-serial-.*=y"
+        "CONFIG_PACKAGE_kmod-ir-.*=y"
+        "CONFIG_PACKAGE_kmod-can-.*=y"
+        "CONFIG_PACKAGE_kmod-qca-nss-drv-.*-mesh=y"
+        "CONFIG_PACKAGE_kmod-qca-nss-drv-wifi=y"
     )
-    for pat in "${wildcard_packages[@]}"; do
-        grep "CONFIG_PACKAGE_${pat//\*/.*}" "$CONFIG_FILE" 2>/dev/null | while read -r line; do
-            p=$(echo "$line" | sed 's/^CONFIG_PACKAGE_\([^=]*\)=.*/\1/')
-            double_remove_package "$p"
-            echo "  ✅ 通配清理: $p"
-        done
+    
+    for pattern in "${wildcard_patterns[@]}"; do
+        # 只匹配激活状态（=y）的条目
+        local matches
+        matches=$(grep -E "^${pattern}$" "$CONFIG_FILE" 2>/dev/null || true)
+        if [ -n "$matches" ]; then
+            echo "$matches" | while read -r line; do
+                # 从 CONFIG_PACKAGE_xxx=y 中提取包名
+                local p
+                p=$(echo "$line" | sed 's/^CONFIG_PACKAGE_//;s/=y$//')
+                if [ -n "$p" ] && [[ ! "$p" =~ ^# ]]; then
+                    remove_package_config "$p"
+                    echo "    ✅ 通配清理: $p"
+                fi
+            done
+        fi
     done
     
-    # v3.4 新增：自动修复依赖
+    # 自动修复依赖
     green "--- 自动修复已知依赖 ---"
     for app in "${!dependency_fix[@]}"; do
         local dep="${dependency_fix[$app]}"
@@ -616,8 +625,6 @@ clean_unused_packages() {
             if ! grep -q "CONFIG_PACKAGE_${dep}=y" "$CONFIG_FILE" 2>/dev/null; then
                 write_config_entry "CONFIG_PACKAGE_${dep}=y"
                 echo "  ✅ 自动添加依赖: ${app} -> ${dep}"
-            else
-                debug "依赖已存在: ${app} -> ${dep}"
             fi
         fi
     done
@@ -664,7 +671,7 @@ write_correct_packages() {
 }
 
 #=========================================================
-# 12. WiFi Hotplug + 参数固化
+# 12. WiFi Hotplug + 参数固化（v3.5修复）
 #=========================================================
 patch_wifi_full_reload() {
     green "===== 安装 WiFi Hotplug ====="
@@ -685,8 +692,10 @@ EOF
     green "✅ WiFi Hotplug安装完成"
 }
 
+# 【修复4】set_wifi_params：使用变量前检查文件存在性
 set_wifi_params() {
-    green "===== 固化 WiFi 参数 ====="    local WIFI_UC="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
+    green "===== 固化 WiFi 参数 ====="
+    local WIFI_UC="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
     if [ -f "$WIFI_UC" ]; then
         safe_sed "$WIFI_UC" "s/ssid='[^']*'/ssid='$WRT_SSID'/g"
         safe_sed "$WIFI_UC" "s/key='[^']*'/key='$WRT_WORD'/g"
@@ -697,7 +706,7 @@ set_wifi_params() {
         safe_sed "$WIFI_UC" "s/ieee80211s/mesh_disabled/g"
         green "✅ WiFi参数固化完成"
     else
-        yellow "WiFi配置文件不存在: $WIFI_UC"
+        yellow "WiFi配置文件不存在: $WIFI_UC，跳过参数固化"
     fi
 }
 
@@ -746,7 +755,8 @@ pre_build_check() {
     green "===== 编译前最终检查 ====="
     
     # 1. 检查 wpad 冲突
-    local wpad_count=$(grep -c "CONFIG_PACKAGE_wpad.*=y" "$CONFIG_FILE" 2>/dev/null || echo 0)
+    local wpad_count
+    wpad_count=$(grep -c "CONFIG_PACKAGE_wpad.*=y" "$CONFIG_FILE" 2>/dev/null || echo 0)
     if [ "$wpad_count" -gt 1 ]; then
         yellow "检测到多个 wpad 变体，只保留 wpad-openssl"
         sed -i '/CONFIG_PACKAGE_wpad-basic/d' "$CONFIG_FILE" 2>/dev/null || true
@@ -780,7 +790,14 @@ pre_build_check() {
         fi
     fi
     
-    # 5. 同步配置
+    # 5. 【修复5】清理可能因通配递归产生的异常条目
+    if grep -q "CONFIG_PACKAGE_# CONFIG_PACKAGE_" "$CONFIG_FILE" 2>/dev/null; then
+        yellow "检测到异常递归条目，正在清理..."
+        sed -i '/^CONFIG_PACKAGE_# CONFIG_PACKAGE_/d' "$CONFIG_FILE" 2>/dev/null || true
+        sed -i '/^# CONFIG_PACKAGE_# CONFIG_PACKAGE_/d' "$CONFIG_FILE" 2>/dev/null || true
+    fi
+    
+    # 6. 同步配置
     green "同步 make defconfig..."
     make defconfig 2>/dev/null || true
     
@@ -834,29 +851,12 @@ verify_cleanup() {
         fi
     done
     
-    # 依赖校验
-    green "【已知依赖校验】"
-    if grep -q "CONFIG_PACKAGE_luci-app-zerotier=y" "$CONFIG_FILE" 2>/dev/null; then
-        grep -q "CONFIG_PACKAGE_zerotier=y" "$CONFIG_FILE" 2>/dev/null \
-            && echo "✅ luci-app-zerotier -> zerotier" \
-            || echo "❌ luci-app-zerotier 缺少 zerotier 依赖"
-    fi
-    if grep -q "CONFIG_PACKAGE_zram-swap=y" "$CONFIG_FILE" 2>/dev/null; then
-        grep -q "CONFIG_PACKAGE_kmod-zram=y" "$CONFIG_FILE" 2>/dev/null \
-            && echo "✅ zram-swap -> kmod-zram" \
-            || echo "❌ zram-swap 缺少 kmod-zram 依赖"
-    fi
-    
-    # 架构检测来源验证
-    green "【架构检测来源】"
-    if [[ "${WRT_TARGET:-}" =~ ^ipq60 ]]; then
-        echo "✅ 通过环境变量 WRT_TARGET=${WRT_TARGET} 检测到 IPQ60xx"
-    elif [ -f "$CONFIG_FILE" ] && grep -q "CONFIG_TARGET_qualcommax_ipq60xx=y" "$CONFIG_FILE" 2>/dev/null; then
-        echo "✅ 通过 .config 文件检测到 CONFIG_TARGET_qualcommax_ipq60xx=y"
-    elif [ -f "$CONFIG_FILE" ] && grep -qE "CONFIG_TARGET.*ipq60" "$CONFIG_FILE" 2>/dev/null; then
-        echo "✅ 通过 .config 文件模糊匹配检测到 IPQ60 系列"
+    # 异常条目检查
+    green "【异常条目检查】"
+    if grep -q "CONFIG_PACKAGE_# CONFIG_PACKAGE_" "$CONFIG_FILE" 2>/dev/null; then
+        echo "❌ 存在递归异常条目，请手动检查 .config"
     else
-        echo "ℹ️ 未检测到 IPQ60xx 平台，NSS 配置已跳过"
+        echo "✅ 无递归异常条目"
     fi
     
     green "🎉 配置校验完成"
@@ -868,7 +868,7 @@ verify_cleanup() {
 main() {
     green ""
     green "========================================"
-    green "=== OpenWrt 编译预配置 v3.4 FINAL ==="
+    green "=== OpenWrt 编译预配置 v3.5 FINAL ==="
     green "=== 目标平台: ${WRT_TARGET} ==="
     green "=== 网关地址: ${WRT_IP} ==="
     green "========================================"
@@ -892,27 +892,17 @@ main() {
     write_basic_config
     load_private_config
     append_custom_packages
-    
-    # v3.4 新增：编译前最终检查
     pre_build_check
-    
     finalize_config_file
     verify_cleanup
     
     green ""
     green "========================================"
-    green "✅ v3.4 FINAL 执行完成"
-    green "更新项:"
-    green "1. safe_write_file 改用管道输入，支持原生here-doc"
-    green "2. safe_find 参数传递修正，避免 xargs 嵌套"
-    green "3. clean_system_config 移除 xargs 嵌套调用"
-    green "4. IRQ亲和 + logger 错误抑制"
-    green "5. nss-status 改用 /proc/stat 替代 top 命令"
-    green "6. 网络配置由外部脚本管理，本脚本不覆盖"
-    green "7. IS_IPQ60 双源检测：环境变量 + .config 回退"
-    green "8. ★ 新增依赖自动修复（zerotier/zram-swap）"
-    green "9. ★ 新增冲突包 sdl3/libwayland 处理"
-    green "10. ★ 新增 pre_build_check 编译前最终检查"
+    green "✅ v3.5 FINAL 执行完成"
+    green "v3.5 修复项:"
+    green "1. ★ 修复通配清理递归问题"
+    green "2. ★ 修复 set_wifi_params unbound variable"
+    green "3. ★ 新增异常条目自动清理"
     green "========================================"
 }
 
