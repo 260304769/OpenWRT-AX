@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
 # IPQ60XX 专用优化版 - 硬加速 (PPPoE 硬件卸载) + CPU 自动调频 + 无队列
-# 包含 fstab 和 hostapd 启动错误修复
+# 修复：移除冲突的 /etc/config/nss 和 /etc/config/ecm，由驱动包自带
 
 # 定义绿色日志输出函数
 green() {
@@ -25,11 +25,10 @@ clean_version_timestamp() {
 }
 clean_version_timestamp
 
-#==================== 3. 修复启动错误（fstab 基础配置 / hostapd init） ====================
+#==================== 3. 修复启动错误（fstab / hostapd） ====================
 fix_boot_errors() {
     green "===== 修复启动错误 ====="
     
-    # 3.1 创建默认 fstab 配置（作为基础，后续 rc.local 会再次强化）
     mkdir -p ./package/base-files/files/etc/config
     cat > ./package/base-files/files/etc/config/fstab << 'EOF'
 config global
@@ -42,7 +41,6 @@ config global
 EOF
     green "✅ fstab 基础配置已创建"
 
-    # 3.2 保留原 hostapd init 修复（但实际被新的早期脚本替代，保留无妨）
     mkdir -p ./package/network/services/hostapd/files
     cat > ./package/network/services/hostapd/files/hostapd.init << 'EOF'
 #!/bin/sh /etc/rc.common
@@ -65,7 +63,7 @@ EOF
 }
 fix_boot_errors
 
-#==================== 4. NSS PBUF 性能调度优化（auto_scale=0, schedutil） ====================
+#==================== 4. NSS PBUF 性能调度优化 ====================
 update_nss_pbuf_performance() {
     local conf="./package/kernel/mac80211/files/pbuf.uci"
     if [ -f "$conf" ]; then
@@ -78,35 +76,7 @@ update_nss_pbuf_performance() {
 }
 update_nss_pbuf_performance
 
-#==================== 5. 创建 NSS / ECM 运行时配置文件 ====================
-configure_nss_ecm() {
-    green "===== 配置 NSS / ECM 硬加速参数 ====="
-    
-    mkdir -p ./package/base-files/files/etc/config
-    cat > ./package/base-files/files/etc/config/nss << 'EOF'
-config nss 'global'
-    option enable '1'
-    option ppe '1'
-    option bridging '1'
-    option qdisc '0'
-    option vlan '1'
-    option wlan '1'
-EOF
-
-    cat > ./package/base-files/files/etc/config/ecm << 'EOF'
-config ecm 'global'
-    option enable '1'
-    option mode '1'
-    option priority '1'
-    option udp_timeout '180'
-    option tcp_timeout '600'
-EOF
-
-    green "✅ NSS / ECM 配置文件已生成（PPE+ECM 全加速，qdisc 禁用）"
-}
-configure_nss_ecm
-
-#==================== 6. NSS 修复脚本（含 qca-nss-pppoe 显式加载 + schedutil 锁定） ====================
+#==================== 5. NSS 修复脚本（含 qca-nss-pppoe 显式加载 + schedutil 锁定） ====================
 install_nss_fix() {
     local init_path="./package/base-files/files/etc/init.d/nss-fix"
     mkdir -p "$(dirname "$init_path")"
@@ -152,7 +122,7 @@ EOF
 }
 install_nss_fix
 
-#==================== 新增 6.1：早期 hostapd 目录创建（解决 Permission denied） ====================
+#==================== 6. 早期 hostapd 目录创建（解决 Permission denied） ====================
 fix_hostapd_dir_early() {
     local init_path="./package/base-files/files/etc/init.d/hostapd-dir"
     mkdir -p "$(dirname "$init_path")"
@@ -176,7 +146,7 @@ EOF
 }
 fix_hostapd_dir_early
 
-#==================== 新增 6.2：rc.local 强化 fstab（解决 block: unable to load configuration） ====================
+#==================== 7. rc.local 强化 fstab（解决 block: unable to load configuration） ====================
 fix_fstab_rc_local() {
     local rclocal="./package/base-files/files/etc/rc.local"
     mkdir -p "$(dirname "$rclocal")"
@@ -187,24 +157,23 @@ exit 0
 EOF
         chmod +x "$rclocal"
     fi
-    # 在 exit 0 前插入 fstab 检查和重新加载
     sed -i '/exit 0/i # 确保 fstab 配置存在并重新加载\n[ -f /etc/config/fstab ] || {\n    uci set fstab.global=global\n    uci set fstab.global.anon_swap=0\n    uci set fstab.global.anon_mount=0\n    uci set fstab.global.auto_swap=1\n    uci set fstab.global.auto_mount=1\n    uci set fstab.global.delay_root=5\n    uci set fstab.global.check_fs=0\n    uci commit fstab\n}\nblock mount 2>/dev/null || true\n' "$rclocal"
     green "✅ rc.local 已添加 fstab 修复"
 }
 fix_fstab_rc_local
 
-#==================== 7. 完整冲突清理（保留 PPPoE，删除队列/隧道） ====================
+#==================== 8. 完整冲突清理（保留 PPPoE，删除队列/隧道） ====================
 clean_conflict_packages() {
     local config_file="./.config"
     green "===== 开始清理冲突包（保留 PPPoE） ====="
     
-    # 7.1 WiFi Mesh 冲突
+    # 8.1 WiFi Mesh 冲突
     sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-wifi-meshmgr/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_wpad-basic/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_wpad-mesh/d' "$config_file"
     echo "CONFIG_PACKAGE_wpad-openssl=y" >> "$config_file"
     
-    # 7.2 不兼容隧道（保留 PPPoE 相关包）
+    # 8.2 不兼容隧道（保留 PPPoE 相关包）
     local tunnel_pkgs=(
         "kmod-6rd" "kmod-gre" "kmod-gre6" "kmod-l2tp"
         "kmod-iptunnel" "kmod-iptunnel4" "kmod-iptunnel6"
@@ -217,30 +186,31 @@ clean_conflict_packages() {
     done
     green "✅ 不兼容隧道已清理"
     
-    # 7.3 NAT/防火墙：删除 nft-offload，启用 NSS ECM
+    # 8.3 NAT/防火墙：删除 nft-offload，启用 NSS ECM
     sed -i '/CONFIG_PACKAGE_kmod-nft-offload/d' "$config_file"
+    # 注意：这里只启用 kmod-qca-nss-ecm，不启用 -standard（因为不存在）
     echo "CONFIG_PACKAGE_kmod-qca-nss-ecm=y" >> "$config_file"
-    echo "CONFIG_PACKAGE_kmod-qca-nss-ecm-standard=y" >> "$config_file"
     
-    # 7.4 IPv6
+    # 8.4 IPv6
     sed -i '/CONFIG_PACKAGE_odhcpd-ipv6only/d' "$config_file"
+    echo "# CONFIG_PACKAGE_odhcpd-ipv6only is not set" >> "$config_file"
     echo "CONFIG_PACKAGE_odhcpd=y" >> "$config_file"
     
-    # 7.5 网络测试
+    # 8.5 网络测试
     sed -i '/CONFIG_PACKAGE_kmod-net-selftests/d' "$config_file"
     
-    # 7.6 无线：仅 AHB 内置，移除 PCI
+    # 8.6 无线：仅 AHB 内置，移除 PCI
     sed -i '/CONFIG_PACKAGE_kmod-ath11k-pci/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca4019/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_ath10k-firmware-qca9984/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_ath11k-firmware-qcn9074/d' "$config_file"
     echo "CONFIG_PACKAGE_ath11k-firmware-ipq6018=y" >> "$config_file"
     
-    # 7.7 删除所有软件队列调度器
+    # 8.7 删除所有软件队列调度器
     sed -i '/CONFIG_PACKAGE_kmod-sched-/d' "$config_file"
     sed -i '/CONFIG_PACKAGE_kmod-sched-core/d' "$config_file"
     
-    # 7.8 保留 PPPoE 拨号 + NSS PPPoE 硬件加速
+    # 8.8 保留 PPPoE 拨号 + NSS PPPoE 硬件加速
     echo "CONFIG_PACKAGE_kmod-ppp=y" >> "$config_file"
     echo "CONFIG_PACKAGE_kmod-pppoe=y" >> "$config_file"
     echo "CONFIG_PACKAGE_kmod-pppox=y" >> "$config_file"
@@ -250,7 +220,7 @@ clean_conflict_packages() {
 }
 clean_conflict_packages
 
-#==================== 8. wifi-scripts 补丁 ====================
+#==================== 9. wifi-scripts 补丁 ====================
 patch_wifi_full_reload() {
     local wifi_uc="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
     if [ -f "$wifi_uc" ]; then
@@ -260,7 +230,7 @@ patch_wifi_full_reload() {
 }
 patch_wifi_full_reload
 
-#==================== 9. 固化 WiFi 参数（含 hostapd 日志静默） ====================
+#==================== 10. 固化 WiFi 参数（含 hostapd 日志静默） ====================
 WIFI_SH=$(find ./target/linux/{mediatek/filogic,qualcommax}/base-files/etc/uci-defaults/ -type f -name "*set-wireless.sh" 2>/dev/null)
 WIFI_UC="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
 
@@ -286,34 +256,34 @@ elif [ -f "$WIFI_UC" ]; then
     green "✅ WiFi 参数已固化（log_level=0）"
 fi
 
-#==================== 10. 固化管理 IP、主机名 ====================
+#==================== 11. 固化管理 IP、主机名 ====================
 CFG_FILE="./package/base-files/files/bin/config_generate"
 sed -i "s/192\.168\.[0-9]*\.[0-9]*/$WRT_IP/g" $CFG_FILE
 sed -i "s/hostname='.*'/hostname='$WRT_NAME'/g" $CFG_FILE
 green "✅ 管理 IP: $WRT_IP，主机名: $WRT_NAME"
 
-#==================== 11. 基础编译配置 ====================
+#==================== 12. 基础编译配置 ====================
 echo "CONFIG_PACKAGE_luci=y" >> ./.config
 echo "CONFIG_LUCI_LANG_zh_Hans=y" >> ./.config
 echo "CONFIG_PACKAGE_luci-theme-$WRT_THEME=y" >> ./.config
 echo "CONFIG_PACKAGE_luci-app-$WRT_THEME-config=y" >> ./.config
 
-#==================== 12. 加载私有配置 ====================
+#==================== 13. 加载私有配置 ====================
 [ -f "$GITHUB_WORKSPACE/Config/PRIVATE.txt" ] && {
     green "Applying private configurations..."
     cat $GITHUB_WORKSPACE/Config/PRIVATE.txt >> ./.config
 }
 
-#==================== 13. 自定义插件 ====================
+#==================== 14. 自定义插件 ====================
 [ -n "$WRT_PACKAGE" ] && echo -e "$WRT_PACKAGE" >> ./.config
 
-#==================== 14. 无 WiFi 标记 ====================
+#==================== 15. 无 WiFi 标记 ====================
 [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]] && {
     echo "WRT_WIFI=wifi-no" >> $GITHUB_ENV
     green "✅ WiFi 已标记为禁用"
 }
 
-#==================== 15. 无 WiFi DTS 适配 ====================
+#==================== 16. 无 WiFi DTS 适配 ====================
 if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]] && \
    [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
     find ./target/linux/qualcommax/dts/ -type f ! -iname '*nowifi*' \
@@ -321,7 +291,7 @@ if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]] && \
     green "✅ nowifi DTS 已适配"
 fi
 
-#==================== 16. 验证 ====================
+#==================== 17. 验证 ====================
 verify_cleanup() {
     local config_file="./.config"
     local conflicts=(
@@ -330,9 +300,8 @@ verify_cleanup() {
         "kmod-ath11k-pci"
     )
     local required=(
-        "kmod-qca-nss-ecm" "kmod-qca-nss-ecm-standard"
-        "ath11k-firmware-ipq6018" "kmod-ppp" "kmod-pppoe"
-        "kmod-qca-nss-drv-pppoe-mgr"
+        "kmod-qca-nss-ecm" "ath11k-firmware-ipq6018"
+        "kmod-ppp" "kmod-pppoe" "kmod-qca-nss-drv-pppoe-mgr"
     )
     
     echo "" && green "===== 验证 ====="
@@ -362,7 +331,7 @@ green "===== IPQ60XX 硬加速脚本执行完毕 ====="
 green "========================================"
 green "✅ CPU 调频: schedutil (自动按需)"
 green "✅ 队列调度器: 已完全移除"
-green "✅ NSS 硬加速: PPE + ECM 全卸载"
+green "✅ NSS 硬加速: PPE + ECM 全卸载（已移除冲突的配置文件）"
 green "✅ PPPoE 拨号: 已保留 + qca-nss-pppoe 硬件卸载"
 green "✅ 无线: 仅 AHB 内置 (无 PCI)"
 green "✅ hostapd 日志: 静默模式 (log_level=0)"
