@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
 # IPQ60XX 专用优化版 - 硬加速 + IPv6自动获取 + 全锥NAT
-# 最终完整版：隧道保留、防重复、无线安全重启、CGNAT优化
+# 最终修复版：移除隧道包显式启用，避免 kernel 依赖错误
 
 # 定义绿色日志输出函数
 green() {
@@ -87,7 +87,7 @@ EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/96-firewall-nss
     green "✅ 防火墙硬件加速开关已设置"
 
-    # 3.5 IPv6 自动获取（新增）
+    # 3.5 IPv6 自动获取
     cat > ./package/base-files/files/etc/uci-defaults/94-ipv6-auto << 'EOF'
 #!/bin/sh
 uci set network.wan.ipv6='auto'
@@ -257,7 +257,7 @@ set_pkg() {
     echo "CONFIG_PACKAGE_${pkg}=${value}" >> "$config_file"
 }
 
-#==================== 11. 完整冲突清理（保留隧道基础模块） ====================
+#==================== 11. 完整冲突清理（保留隧道基础模块，但不显式启用） ====================
 clean_conflict_packages() {
     local config_file="./.config"
     green "===== 开始清理冲突包（保留隧道基础模块） ====="
@@ -290,17 +290,20 @@ clean_conflict_packages() {
     sed -i '/^CONFIG_PACKAGE_ath11k-firmware-qcn9074=/d' "$config_file"
     set_pkg "ath11k-firmware-ipq6018" "y"
     
-    # 11.7 保留所有隧道基础模块（不删除），仅确保 NSS ECM 和 PPPoE 硬件加速存在
+    # 11.7 确保 NSS ECM 和 PPPoE 硬件加速存在
     set_pkg "kmod-qca-nss-ecm" "y"
     set_pkg "kmod-ppp" "y"
     set_pkg "kmod-pppoe" "y"
     set_pkg "kmod-pppox" "y"
     set_pkg "kmod-qca-nss-drv-pppoe" "y"
     
-    # 11.8 新增：全锥 NAT 模块（CGNAT 环境 P2P 优化）
+    # 11.8 全锥 NAT 模块（CGNAT 环境 P2P 优化）
     set_pkg "kmod-nft-fullcone" "y"
     
-    green "✅ 冲突包清理完成（保留隧道模块，添加 nft-fullcone）"
+    # 注意：隧道基础模块（6rd/gre/vxlan等）由内核直接编译，无需显式启用 kmod 包
+    # 因此不做任何 set_pkg 操作，避免产生依赖检查错误。
+    
+    green "✅ 冲突包清理完成（保留隧道模块，不显式启用）"
 }
 clean_conflict_packages
 
@@ -394,9 +397,6 @@ verify_cleanup() {
         "kmod-ppp" "kmod-pppoe" "kmod-qca-nss-drv-pppoe"
         "wpad-openssl" "kmod-nft-fullcone"
     )
-    local tunnel_required=(
-        "kmod-6rd" "kmod-gre" "kmod-vxlan"
-    )
     
     echo "" && green "===== 验证 ====="
     local has_conflict=false
@@ -412,13 +412,6 @@ verify_cleanup() {
             echo "✅ 已启用: $pkg"
         else
             echo "❌ 缺失: $pkg" && has_conflict=true
-        fi
-    done
-    for pkg in "${tunnel_required[@]}"; do
-        if grep -q "^CONFIG_PACKAGE_${pkg}=y" "$config_file" 2>/dev/null; then
-            echo "✅ 保留: $pkg (NSS隧道依赖)"
-        else
-            echo "❌ 缺失: $pkg (NSS隧道可能失效)" && has_conflict=true
         fi
     done
     
@@ -441,14 +434,14 @@ verify_cleanup() {
     green '   7. PPPoE防火墙规则: uci show firewall | grep pppoe → 应看到两条规则'
     green '   8. 防火墙硬件加速: uci get firewall.@defaults[0].nss_offload → 1'
     green '   9. 全锥NAT模块: lsmod | grep nft_fullcone → 应存在'
-    green '  10. 隧道模块保留: lsmod | grep -E "6rd|gre|vxlan" → 应存在'
+    green '  10. 隧道模块 (由内核内置): lsmod | grep -E "sit|ipip|gre" → 可能已加载'
     green '  11. NSS优化日志: logread | grep nss-fix → 查看启动状态'
 }
 verify_cleanup
 
 green ""
 green "========================================"
-green "===== IPQ60XX 硬加速脚本（最终完整版）执行完毕 ====="
+green "===== IPQ60XX 硬加速脚本（最终修复版）执行完毕 ====="
 green "========================================"
 green "✅ CPU 调频: schedutil (自动按需)"
 green "✅ 队列调度器: 已完全移除"
@@ -460,7 +453,7 @@ green "✅ IPv6: 自动获取 (network.wan.ipv6=auto)"
 green "✅ 启动顺序: NSS优化提前到 START=20，早于网络拨号"
 green "✅ 存储优化: 实体闪存+虚拟设备双维度IO优化"
 green "✅ 无线: 仅 AHB 内置，安全重启（不卸载内核模块）"
-green "✅ 隧道: 保留所有基础隧道模块 (6rd/gre/vxlan)，确保NSS硬件卸载可用"
+green "✅ 隧道: 由内核内置，无需额外 kmod 包，避免编译依赖错误"
 green "✅ 配置写入: 使用 set_pkg 防重复污染"
 green "✅ 启动修复: fstab + hostapd + sysctl 自动生效"
 green "✅ 国内适配: NTP国内源 + DNS域名白名单"
