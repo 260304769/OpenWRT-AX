@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
 # IPQ60XX 专用优化版 - 硬加速 + IPv6自动获取 + 全锥NAT
-# 精简修复版：hostapd 固件自带，不新建兜底文件
+# 最终修复版：使用 disable_pkg (=n) 彻底阻止冲突包依赖回拉
 
 # 定义绿色日志输出函数
 green() {
@@ -244,53 +244,56 @@ set_pkg() {
     echo "CONFIG_PACKAGE_${pkg}=${value}" >> "$config_file"
 }
 
-#==================== 11. 完整冲突清理（保留隧道基础模块，但不显式启用） ====================
+#==================== 11. 完整冲突清理（使用 disable_pkg 写入 =n 彻底阻止依赖回拉） ====================
 clean_conflict_packages() {
     local config_file="./.config"
     green "===== 开始清理冲突包（保留隧道基础模块） ====="
     
-    # 11.1 WiFi Mesh：删除 basic 和 mesh，保留 openssl
-    sed -i '/^CONFIG_PACKAGE_wpad-basic=/d' "$config_file"
-    sed -i '/^CONFIG_PACKAGE_wpad-mesh=/d' "$config_file"
+    # 通用禁用函数：彻底删除行后追加 =n，防止依赖回拉
+    disable_pkg() {
+        sed -i "/^CONFIG_PACKAGE_$1=/d" "$config_file"
+        echo "CONFIG_PACKAGE_$1=n" >> "$config_file"
+    }
+
+    # 11.1 WiFi：删除 basic/mesh，保留 openssl
+    disable_pkg "wpad-basic"
+    disable_pkg "wpad-mesh"
     set_pkg "wpad-openssl" "y"
     
-    # 11.2 删除软件 nft-offload
-    sed -i '/^CONFIG_PACKAGE_kmod-nft-offload=/d' "$config_file"
+    # 11.2 删除软件 nft-offload（硬加速冲突）
+    disable_pkg "kmod-nft-offload"
     
-    # 11.3 删除软件队列调度器
+    # 11.3 删除全部软件队列调度器
     for pkg in $(grep "^CONFIG_PACKAGE_kmod-sched-" "$config_file" | cut -d= -f1 | sed 's/^CONFIG_PACKAGE_//'); do
-        sed -i "/^CONFIG_PACKAGE_${pkg}=/d" "$config_file"
+        disable_pkg "$pkg"
     done
-    sed -i '/^CONFIG_PACKAGE_kmod-sched-core=/d' "$config_file"
+    disable_pkg "kmod-sched-core"
     
-    # 11.4 网络测试包
-    sed -i '/^CONFIG_PACKAGE_kmod-net-selftests=/d' "$config_file"
+    # 11.4 删除网络测试包
+    disable_pkg "kmod-net-selftests"
     
-    # 11.5 IPv6：删除 ipv6only，保留 odhcpd
-    sed -i '/^CONFIG_PACKAGE_odhcpd-ipv6only=/d' "$config_file"
+    # 11.5 IPv6：删除 ipv6only，保留完整版 odhcpd
+    disable_pkg "odhcpd-ipv6only"
     set_pkg "odhcpd" "y"
     
-    # 11.6 无线驱动：仅 AHB，删除 PCI
-    sed -i '/^CONFIG_PACKAGE_kmod-ath11k-pci=/d' "$config_file"
-    sed -i '/^CONFIG_PACKAGE_ath10k-firmware-qca4019=/d' "$config_file"
-    sed -i '/^CONFIG_PACKAGE_ath10k-firmware-qca9984=/d' "$config_file"
-    sed -i '/^CONFIG_PACKAGE_ath11k-firmware-qcn9074=/d' "$config_file"
+    # 11.6 无线驱动：仅保留 AHB，删除 PCI
+    disable_pkg "kmod-ath11k-pci"
+    disable_pkg "ath10k-firmware-qca4019"
+    disable_pkg "ath10k-firmware-qca9984"
+    disable_pkg "ath11k-firmware-qcn9074"
     set_pkg "ath11k-firmware-ipq6018" "y"
     
-    # 11.7 确保 NSS ECM 和 PPPoE 硬件加速存在
+    # 11.7 确保 NSS ECM 和 PPPoE 硬件加速
     set_pkg "kmod-qca-nss-ecm" "y"
     set_pkg "kmod-ppp" "y"
     set_pkg "kmod-pppoe" "y"
     set_pkg "kmod-pppox" "y"
     set_pkg "kmod-qca-nss-drv-pppoe" "y"
     
-    # 11.8 全锥 NAT 模块（CGNAT 环境 P2P 优化）
+    # 11.8 全锥 NAT 模块
     set_pkg "kmod-nft-fullcone" "y"
     
-    # 注意：隧道基础模块（6rd/gre/vxlan等）由内核直接编译，无需显式启用 kmod 包
-    # 因此不做任何 set_pkg 操作，避免产生依赖检查错误。
-    
-    green "✅ 冲突包清理完成（保留隧道模块，不显式启用）"
+    green "✅ 冲突包清理完成（隧道模块保留，支持NSS硬加速）"
 }
 clean_conflict_packages
 
@@ -429,10 +432,10 @@ verify_cleanup
 
 green ""
 green "========================================"
-green "===== IPQ60XX 硬加速脚本（最终精简版）执行完毕 ====="
+green "===== IPQ60XX 硬加速脚本（最终强化版）执行完毕 ====="
 green "========================================"
 green "✅ CPU 调频: schedutil (自动按需)"
-green "✅ 队列调度器: 已完全移除"
+green "✅ 队列调度器: 已完全移除（使用 =n 强制禁用）"
 green "✅ NSS 硬加速: PPE + 桥接卸载 + PPPoE 硬件卸载 (无ECM重载)"
 green "✅ WAN 优化: 接收队列扩容 + NSS接收聚合"
 green "✅ 连接跟踪: 超时调优 (syn_recv=60s) 避免高延迟断连"
@@ -442,7 +445,7 @@ green "✅ 启动顺序: NSS优化提前到 START=20，早于网络拨号"
 green "✅ 存储优化: 实体闪存+虚拟设备双维度IO优化"
 green "✅ 无线: 仅 AHB 内置，安全重启（不卸载内核模块）"
 green "✅ 隧道: 由内核内置，无需额外 kmod 包，避免编译依赖错误"
-green "✅ 配置写入: 使用 set_pkg 防重复污染"
+green "✅ 配置写入: 使用 set_pkg/disable_pkg 防重复污染"
 green "✅ 启动修复: fstab + hostapd + sysctl 自动生效"
 green "✅ 国内适配: NTP国内源 + DNS域名白名单"
 green "========================================"
