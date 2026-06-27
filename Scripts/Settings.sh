@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
 # IPQ60XX 专用优化版 - 硬加速 + IPv6自动获取 + 全锥NAT
-# 最终修复版：移除隧道包显式启用，避免 kernel 依赖错误
+# 精简修复版：hostapd 固件自带，不新建兜底文件
 
 # 定义绿色日志输出函数
 green() {
@@ -42,7 +42,7 @@ config global
 EOF
     green "✅ fstab 基础配置已创建"
 
-    # 3.2 hostapd 运行目录补丁
+    # 3.2 hostapd 运行目录补丁（固件自带hostapd.init，仅打补丁）
     local hostapd_init="./package/network/services/hostapd/files/hostapd.init"
     if [ -f "$hostapd_init" ]; then
         if ! grep -q "mkdir -p /var/run/hostapd" "$hostapd_init"; then
@@ -52,15 +52,7 @@ EOF
             green "ℹ️ hostapd init 已包含目录创建"
         fi
     else
-        mkdir -p ./package/base-files/files/etc
-        if [ ! -f ./package/base-files/files/etc/rc.local ]; then
-            echo -e "#!/bin/sh\nexit 0" > ./package/base-files/files/etc/rc.local
-            chmod +x ./package/base-files/files/etc/rc.local
-        fi
-        if ! grep -q "mkdir -p /var/run/hostapd" ./package/base-files/files/etc/rc.local; then
-            sed -i '/exit 0/i mkdir -p /var/run/hostapd\nchmod 755 /var/run/hostapd\n' ./package/base-files/files/etc/rc.local
-            green "✅ hostapd 运行目录已加入 rc.local 兜底"
-        fi
+        green "ℹ️ hostapd.init 未找到，跳过（固件自带无需兜底）"
     fi
 
     # 3.3 PPPoE MTU 优化
@@ -87,27 +79,34 @@ EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/96-firewall-nss
     green "✅ 防火墙硬件加速开关已设置"
 
-    # 3.5 IPv6 自动获取
+    # 3.5 IPv6 自动获取 + LAN 侧完整配置
     cat > ./package/base-files/files/etc/uci-defaults/94-ipv6-auto << 'EOF'
 #!/bin/sh
 uci set network.wan.ipv6='auto'
+uci set network.lan.ipv6='1'
+uci set dhcp.lan.ra='hybrid'
+uci set dhcp.lan.dhcpv6='hybrid'
+uci set dhcp.lan.ndp='1'
 uci commit network
+uci commit dhcp
 exit 0
 EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/94-ipv6-auto
-    green "✅ IPv6 自动获取已启用 (network.wan.ipv6=auto)"
+    green "✅ IPv6 完整配置已启用（WAN自动获取 + LAN前缀下发）"
 }
 fix_boot_errors
 
-#==================== 4. NSS PBUF 性能调度优化 ====================
+#==================== 4. NSS PBUF 性能调度优化（自动兼容多源码路径） ====================
 update_nss_pbuf_performance() {
-    local conf="./package/kernel/mac80211/files/pbuf.uci"
-    if [ -f "$conf" ]; then
+    local conf=$(find ./package -name "pbuf.uci" 2>/dev/null | head -n1)
+    if [ -n "$conf" ] && [ -f "$conf" ]; then
         sed -i "s/auto_scale '1'/auto_scale '0'/g" "$conf" 2>/dev/null
         sed -i "s/auto_scale 'off'/auto_scale '0'/g" "$conf" 2>/dev/null
         sed -i "s/scaling_governor 'performance'/scaling_governor 'schedutil'/g" "$conf" 2>/dev/null
         sed -i "s/scaling_governor 'ondemand'/scaling_governor 'schedutil'/g" "$conf" 2>/dev/null
         green "✅ NSS PBUF: 自动缩放关闭，CPU调度器切换 schedutil"
+    else
+        green "ℹ️ 未找到 pbuf.uci 配置，跳过PBUF调度优化"
     fi
 }
 update_nss_pbuf_performance
@@ -125,6 +124,8 @@ start() {
     (
         mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug 2>/dev/null
 
+        # 先加载核心驱动，再加载PPPoE扩展模块，避免依赖缺失加载失败
+        modprobe -a qca-nss-drv qca-nss-ecm 2>/dev/null
         modprobe qca_nss_pppoe 2>/dev/null && logger -t nss-fix "PPPoE硬件卸载模块加载成功"
 
         echo 1 > /sys/module/qca_nss_drv/parameters/ppe_enable 2>/dev/null || true
@@ -197,34 +198,20 @@ EOF
 }
 add_sysctl_tweaks
 
-#==================== 8. PPPoE 防火墙放行规则 ====================
-fix_pppoe_firewall() {
+#==================== 8. 全锥 NAT 启用配置 ====================
+enable_fullcone_nat() {
     mkdir -p ./package/base-files/files/etc/uci-defaults
-    cat > ./package/base-files/files/etc/uci-defaults/97-pppoe-firewall << 'EOF'
+    cat > ./package/base-files/files/etc/uci-defaults/95-fullcone-nat << 'EOF'
 #!/bin/sh
-if ! uci -q get firewall.@rule[-1].name | grep -q "pppoe_allow"; then
-    uci add firewall rule
-    uci set firewall.@rule[-1].name='pppoe_allow'
-    uci set firewall.@rule[-1].src='wan'
-    uci set firewall.@rule[-1].proto='all'
-    uci set firewall.@rule[-1].ethertype='0x8863'
-    uci set firewall.@rule[-1].target='ACCEPT'
-    
-    uci add firewall rule
-    uci set firewall.@rule[-1].name='pppoe_session_allow'
-    uci set firewall.@rule[-1].src='wan'
-    uci set firewall.@rule[-1].proto='all'
-    uci set firewall.@rule[-1].ethertype='0x8864'
-    uci set firewall.@rule[-1].target='ACCEPT'
-    
-    uci commit firewall
-fi
+uci set firewall.@defaults[0].fullcone='1'
+uci set firewall.@defaults[0].fullcone6='1'
+uci commit firewall
 exit 0
 EOF
-    chmod +x ./package/base-files/files/etc/uci-defaults/97-pppoe-firewall
-    green "✅ PPPoE 防火墙放行规则已固化"
+    chmod +x ./package/base-files/files/etc/uci-defaults/95-fullcone-nat
+    green "✅ 全锥 NAT 已在防火墙默认配置中启用"
 }
-fix_pppoe_firewall
+enable_fullcone_nat
 
 #==================== 9. NTP国内源 + DNS域名白名单 ====================
 add_ntp_dns_whitelist() {
@@ -312,7 +299,8 @@ patch_wifi_full_reload() {
     local wifi_uc="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
     if [ -f "$wifi_uc" ]; then
         if ! grep -q "ubus call network.wireless reload" "$wifi_uc"; then
-            sed -i '/ubus call network.wireless stop/a\    exec("ubus call network.wireless reload 2>/dev/null || /etc/init.d/wifi restart");' "$wifi_uc"
+            # 用 reload 替代 stop，避免卸载内核模块导致驱动崩溃
+            sed -i 's/ubus call network.wireless stop/ubus call network.wireless reload/g' "$wifi_uc"
             green "✅ wifi-scripts 补丁注入成功（安全重启无线）"
         else
             green "ℹ️ wifi-scripts 补丁已存在"
@@ -326,8 +314,8 @@ WIFI_SH=$(find ./target/linux/{mediatek/filogic,qualcommax}/base-files/etc/uci-d
 WIFI_UC="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
 
 if [ -f "$WIFI_SH" ]; then
-    sed -i "s/BASE_SSID='.*'/BASE_SSID='$WRT_SSID'/g" $WIFI_SH
-    sed -i "s/BASE_WORD='.*'/BASE_WORD='$WRT_WORD'/g" $WIFI_SH
+    sed -i "s/BASE_SSID='[^']*'/BASE_SSID='$WRT_SSID'/g" $WIFI_SH
+    sed -i "s/BASE_WORD='[^']*'/BASE_WORD='$WRT_WORD'/g" $WIFI_SH
     sed -i "/wifi-device/a\    option disabled '0'" $WIFI_SH 2>/dev/null || true
     cat >> $WIFI_SH << 'EOF'
 for dev in $(uci show wireless | grep '=wifi-device' | cut -d. -f2 | cut -d= -f1); do
@@ -338,13 +326,13 @@ uci commit wireless
 EOF
     green "✅ WiFi 参数已固化"
 elif [ -f "$WIFI_UC" ]; then
-    sed -i "s/ssid='.*'/ssid='$WRT_SSID'/g" $WIFI_UC
-    sed -i "s/key='.*'/key='$WRT_WORD'/g" $WIFI_UC
-    sed -i "s/country='.*'/country='CN'/g" $WIFI_UC
-    sed -i "s/encryption='.*'/encryption='psk2+ccmp'/g" $WIFI_UC
+    sed -i "s/ssid='[^']*'/ssid='$WRT_SSID'/g" $WIFI_UC
+    sed -i "s/key='[^']*'/key='$WRT_WORD'/g" $WIFI_UC
+    sed -i "s/country='[^']*'/country='CN'/g" $WIFI_UC
+    sed -i "s/encryption='[^']*'/encryption='psk2+ccmp'/g" $WIFI_UC
     sed -i "s/disabled='1'/disabled='0'/g" $WIFI_UC
     grep -q "log_level" "$WIFI_UC" && \
-        sed -i "s/log_level='.*'/log_level='0'/g" $WIFI_UC || \
+        sed -i "s/log_level='[^']*'/log_level='0'/g" $WIFI_UC || \
         sed -i "/option encryption/a\    option log_level '0'" $WIFI_UC
     grep -q "disabled" "$WIFI_UC" || sed -i "/wifi-device/a\    disabled '0'" $WIFI_UC
     green "✅ WiFi 参数已固化"
@@ -353,7 +341,7 @@ fi
 #==================== 14. 固化管理 IP、主机名 ====================
 CFG_FILE="./package/base-files/files/bin/config_generate"
 sed -i "s/192\.168\.[0-9]*\.[0-9]*/$WRT_IP/g" $CFG_FILE
-sed -i "s/hostname='.*'/hostname='$WRT_NAME'/g" $CFG_FILE
+sed -i "s/hostname='[^']*'/hostname='$WRT_NAME'/g" $CFG_FILE
 green "✅ 管理 IP: $WRT_IP，主机名: $WRT_NAME"
 
 #==================== 15. 基础编译配置（防重复） ====================
@@ -431,7 +419,7 @@ verify_cleanup() {
     green '   4. IPv6自动获取: uci get network.wan.ipv6 → auto'
     green '   5. NTP服务器: uci get system.ntp.server → cn.ntp.org.cn'
     green '   6. DNS白名单: uci get dhcp.@dnsmasq[0].rebind_domain → 包含 cn.ntp.org.cn'
-    green '   7. PPPoE防火墙规则: uci show firewall | grep pppoe → 应看到两条规则'
+    green '   7. 全锥NAT开关: uci get firewall.@defaults[0].fullcone → 1'
     green '   8. 防火墙硬件加速: uci get firewall.@defaults[0].nss_offload → 1'
     green '   9. 全锥NAT模块: lsmod | grep nft_fullcone → 应存在'
     green '  10. 隧道模块 (由内核内置): lsmod | grep -E "sit|ipip|gre" → 可能已加载'
@@ -441,15 +429,15 @@ verify_cleanup
 
 green ""
 green "========================================"
-green "===== IPQ60XX 硬加速脚本（最终修复版）执行完毕 ====="
+green "===== IPQ60XX 硬加速脚本（最终精简版）执行完毕 ====="
 green "========================================"
 green "✅ CPU 调频: schedutil (自动按需)"
 green "✅ 队列调度器: 已完全移除"
 green "✅ NSS 硬加速: PPE + 桥接卸载 + PPPoE 硬件卸载 (无ECM重载)"
 green "✅ WAN 优化: 接收队列扩容 + NSS接收聚合"
 green "✅ 连接跟踪: 超时调优 (syn_recv=60s) 避免高延迟断连"
-green "✅ 防火墙: 硬件加速开关 + PPPoE放行 + 全锥NAT (nft-fullcone)"
-green "✅ IPv6: 自动获取 (network.wan.ipv6=auto)"
+green "✅ 防火墙: 硬件加速开关 + 全锥NAT 完整启用"
+green "✅ IPv6: WAN自动获取 + LAN前缀完整下发"
 green "✅ 启动顺序: NSS优化提前到 START=20，早于网络拨号"
 green "✅ 存储优化: 实体闪存+虚拟设备双维度IO优化"
 green "✅ 无线: 仅 AHB 内置，安全重启（不卸载内核模块）"
