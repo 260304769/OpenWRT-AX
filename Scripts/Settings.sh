@@ -3,6 +3,7 @@
 # Copyright (C) 2026 VIKINGYFY
 # IPQ60XX 专用优化版 - NSS硬加速 + IPv6服务器模式 + 硬件全锥NAT
 # 最终修复版：服务自启修复 + 时间戳根源解决 + 全链路稳定性增强
+# 修复：显式启用 wifi-scripts，修正 apsd 配置写法
 
 # 定义绿色日志输出函数
 green() {
@@ -132,11 +133,15 @@ for iface in \$(uci show wireless | grep '=wifi-iface' | cut -d. -f2 | cut -d= -
     uci set wireless.\$iface.encryption='psk2+ccmp'
 done
 
+# 修复：直接设置 apsd，避免畸形段名
+uci set wireless.default_radio0.apsd='0'
+uci set wireless.default_radio1.apsd='0'
+
 uci commit wireless
 exit 0
 EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/96-wifi-config
-    green "✅ 96-wifi-config: WiFi参数"
+    green "✅ 96-wifi-config: WiFi参数（含apsd禁用）"
 
     # 关键修复：启用自定义init服务，确保开机自动执行
     cat > ./package/base-files/files/etc/uci-defaults/99-enable-init << 'EOF'
@@ -355,6 +360,9 @@ clean_conflict_packages() {
         sed -i "/^CONFIG_PACKAGE_${pkg}=/d" "$config_file"
     done
     
+    # 修复：显式启用 wifi-scripts，确保 /etc/init.d/wifi 完整安装
+    set_pkg "wifi-scripts" "y"
+    
     green "✅ 冲突包清理完成"
 }
 clean_conflict_packages
@@ -374,11 +382,14 @@ patch_wifi_full_reload() {
 patch_wifi_full_reload
 
 #==================== 12. 基础编译配置 ====================
-# 配置文件修改
-echo "CONFIG_PACKAGE_luci=y" >> ./.config
+# 使用 set_pkg 防重复，并确保 wifi-scripts 被包含
+set_pkg "luci" "y"
+# 语言选项（正确前缀：CONFIG_LUCI_LANG_zh_Hans，无 PACKAGE_）
+sed -i "/^CONFIG_LUCI_LANG_zh_Hans=/d" ./.config
 echo "CONFIG_LUCI_LANG_zh_Hans=y" >> ./.config
-echo "CONFIG_PACKAGE_luci-theme-$WRT_THEME=y" >> ./.config
-echo "CONFIG_PACKAGE_luci-app-$WRT_THEME-config=y" >> ./.config
+set_pkg "luci-theme-$WRT_THEME" "y"
+set_pkg "luci-app-$WRT_THEME-config" "y"
+set_pkg "wifi-scripts" "y"
 
 #==================== 13. 加载私有配置 ====================
 [ -f "$GITHUB_WORKSPACE/Config/PRIVATE.txt" ] && {
@@ -436,6 +447,7 @@ verify_cleanup() {
         "kmod-ppp" "kmod-pppoe" "kmod-qca-nss-drv-pppoe"
         "wpad-openssl"
         "luci"
+        "wifi-scripts"
     )
     local dependencies=(
         "kmod-sched-core" "kmod-ifb" "kmod-nss-ifb"
@@ -509,7 +521,7 @@ verify_cleanup() {
     green '   8. 软件流卸载: uci get firewall.@defaults[0].flow_offloading → 0'
     green '   9. NSS核心驱动: lsmod | grep qca_nss_drv → 应存在'
     green '  10. 全锥状态: cat /sys/module/qca_nss_ecm/parameters/fullcone → 1'
-    green '  11. 中文语言: grep CONFIG_LUCI_LANG_zh_Hans /etc/openwrt_release → 应存在'
+    green '  11. 无线脚本: ls -l /etc/init.d/wifi → 应存在'
     green '  12. NSS优化日志: logread | grep nss-fix → 查看启动状态'
 }
 verify_cleanup
@@ -526,7 +538,7 @@ green "✅ 防火墙: 纯硬件加速模式，无软件转发冲突"
 green "✅ IPv6: WAN自动获取 + LAN前缀完整下发（兼容新版OpenWrt）"
 green "✅ 启动顺序: NSS驱动前置 + hostapd目录时序适配"
 green "✅ 服务自启: 所有自定义优化服务开机自动生效"
-green "✅ 无线: 仅 AHB 内置，安全重启"
+green "✅ 无线: 仅 AHB 内置，安全重启，无线脚本完整"
 green "✅ 隧道: 由内核内置，已清理残留 kmod 条目"
 green "✅ LuCI: 基础LuCI + 中文语言 + 主题($WRT_THEME) + 主题配置"
 green "✅ 兼容: 新旧NSS补丁静默适配，无误导性告警"
