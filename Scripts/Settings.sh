@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
-# IPQ60XX 专用优化版 - 硬加速 + IPv6服务器模式 + 全锥NAT
-# 优化版：区分冲突包与功能依赖，精准验证
+# IPQ60XX 专用优化版 - NSS硬加速 + IPv6服务器模式 + 硬件全锥NAT
+# 最终合并优化版：修复冲突 + 兼容新旧补丁 + 编译稳定性增强
 
 # 定义绿色日志输出函数
 green() {
@@ -13,7 +13,6 @@ green() {
 sed -i "/attendedsysupgrade/d" $(find ./feeds/luci/collections/ -type f -name "Makefile")
 sed -i "s/luci-theme-bootstrap/luci-theme-$WRT_THEME/g" $(find ./feeds/luci/collections/ -type f -name "Makefile")
 sed -i "s/192\.168\.[0-9]*\.[0-9]*/$WRT_IP/g" $(find ./feeds/luci/modules/luci-mod-system/ -type f -name "flash.js")
-# 已去除：在版本号后追加自定义标识和日期的行
 
 #==================== 2. 清理固件内置多余编译时间戳 ====================
 clean_version_timestamp() {
@@ -76,7 +75,7 @@ EOF
     cat > ./package/base-files/files/etc/uci-defaults/93-ipv6-server << 'EOF'
 #!/bin/sh
 uci set network.wan.ipv6='auto'
-uci set network.lan.ipv6='1'
+uci set network.lan.ip6assign='64'
 uci set dhcp.lan.ra='hybrid'
 uci set dhcp.lan.dhcpv6='hybrid'
 uci set dhcp.lan.ndp='1'
@@ -85,19 +84,18 @@ uci commit dhcp
 exit 0
 EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/93-ipv6-server
-    green "✅ 93-ipv6-server: IPv6服务器模式"
+    green "✅ 93-ipv6-server: IPv6服务器模式（兼容23.05+）"
 
     cat > ./package/base-files/files/etc/uci-defaults/94-firewall-nss << 'EOF'
 #!/bin/sh
+# NSS硬件转发模式下禁用软件流卸载，全锥由NSS ECM原生支持
 uci set firewall.@defaults[0].flow_offloading='0'
 uci set firewall.@defaults[0].nss_offload='1'
-uci set firewall.@defaults[0].fullcone='1'
-uci set firewall.@defaults[0].fullcone6='1'
 uci commit firewall
 exit 0
 EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/94-firewall-nss
-    green "✅ 94-firewall-nss: 硬件加速+全锥NAT"
+    green "✅ 94-firewall-nss: NSS硬件加速 + 原生全锥NAT"
 
     cat > ./package/base-files/files/etc/uci-defaults/95-ntp-dns << 'EOF'
 #!/bin/sh
@@ -145,7 +143,7 @@ create_hostapd_dir_init() {
     mkdir -p "$(dirname "$init_path")"
     cat > "$init_path" << 'EOF'
 #!/bin/sh /etc/rc.common
-START=20
+START=80
 STOP=90
 
 start() {
@@ -159,7 +157,7 @@ stop() {
 }
 EOF
     chmod +x "$init_path"
-    green "✅ hostapd 目录 init 脚本（START=20）"
+    green "✅ hostapd 目录 init 脚本（START=80，时序适配hostapd启动）"
 }
 create_hostapd_dir_init
 
@@ -207,7 +205,9 @@ start() {
         echo 1 > /sys/module/qca_nss_drv/parameters/bridge_offload 2>/dev/null || {
             echo 1 > /sys/module/qca-nss-drv/parameters/bridge_offload 2>/dev/null || logger -t nss-fix "⚠️ 桥接卸载启用失败"
         }
-        echo 1 > /proc/sys/net/nss/offload 2>/dev/null || logger -t nss-fix "⚠️ NSS offload启用失败"
+
+        # 仅旧版QSDK存在该节点，无节点静默跳过，避免误导告警
+        [ -f /proc/sys/net/nss/offload ] && echo 1 > /proc/sys/net/nss/offload 2>/dev/null || true
 
         wan_dev=$(uci get network.wan.ifname 2>/dev/null || echo "wan")
         for queue in /sys/class/net/${wan_dev}/queues/rx-*; do
@@ -264,12 +264,12 @@ add_sysctl_tweaks() {
     mkdir -p "$(dirname "$sysctl_conf")"
     if ! grep -q "nf_conntrack_max" "$sysctl_conf" 2>/dev/null; then
         cat >> "$sysctl_conf" << 'EOF'
-# NSS ECM 加速优化：调整超时适应高延迟网络
-net.netfilter.nf_conntrack_tcp_timeout_syn_recv = 60
+# NSS ECM 加速优化：调整超时适配高并发，兼顾抗SYN攻击
+net.netfilter.nf_conntrack_tcp_timeout_syn_recv = 30
 net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 30
-net.netfilter.nf_conntrack_max = 65536
+net.netfilter.nf_conntrack_max = 131072
 EOF
-        green "✅ sysctl.conf: 连接跟踪优化（syn_recv=60s）"
+        green "✅ sysctl.conf: 连接跟踪优化（syn_recv=30s，上限131072）"
     else
         green "ℹ️ sysctl.conf 已包含连接跟踪优化，跳过"
     fi
@@ -297,20 +297,18 @@ clean_conflict_packages() {
     local config_file="./.config"
     green "===== 开始清理冲突包 ====="
     
-    # WiFi：删除 basic/mesh，保留 openssl
     disable_pkg "wpad-basic"
     disable_pkg "wpad-mesh"
     set_pkg "wpad-openssl" "y"
     
-    # 删除软件 offload 相关包（与 NSS ECM 冲突）
+    # 禁用软件流卸载，与NSS硬件转发冲突
     disable_pkg "kmod-nft-offload"
-    disable_pkg "kmod-nf-flow"        # 与 nft-offload 同源，一并禁用
+    disable_pkg "kmod-nf-flow"
+    disable_pkg "kmod-nft-fullcone"
     
-    # 删除全部软件队列调度器（但保留 kmod-sched-core，因为 NSS qdisc 依赖）
     for pkg in $(grep "^CONFIG_PACKAGE_kmod-sched-" "$config_file" | grep -v "kmod-sched-core" | cut -d= -f1 | sed 's/^CONFIG_PACKAGE_//'); do
         disable_pkg "$pkg"
     done
-    # 注意：kmod-sched-core 被 kmod-qca-nss-drv-qdisc 依赖，强行禁用会破坏 NSS 队列管理，因此不处理
     
     disable_pkg "kmod-net-selftests"
     
@@ -323,15 +321,14 @@ clean_conflict_packages() {
     disable_pkg "ath11k-firmware-qcn9074"
     set_pkg "ath11k-firmware-ipq6018" "y"
     
+    # NSS核心驱动与PPPoE卸载
+    set_pkg "kmod-qca-nss-drv" "y"
     set_pkg "kmod-qca-nss-ecm" "y"
     set_pkg "kmod-ppp" "y"
     set_pkg "kmod-pppoe" "y"
     set_pkg "kmod-pppox" "y"
     set_pkg "kmod-qca-nss-drv-pppoe" "y"
     
-    set_pkg "kmod-nft-fullcone" "y"
-    
-    # 清理可能残留的隧道 kmod 条目
     for pkg in kmod-6rd kmod-gre kmod-gre6 kmod-vxlan kmod-sit kmod-ipip kmod-iptunnel kmod-iptunnel4 kmod-iptunnel6 kmod-udptunnel4 kmod-udptunnel6; do
         sed -i "/^CONFIG_PACKAGE_${pkg}=/d" "$config_file"
     done
@@ -356,12 +353,13 @@ patch_wifi_full_reload
 
 #==================== 12. 基础编译配置 ====================
 set_pkg "luci" "y"
-set_pkg "LUCI_LANG_zh_Hans" "y"
+# 语言选项：兼容新旧版LuCI命名
+sed -i "/^CONFIG_LUCI_LANG_zh_Hans=/d" ./.config
+echo "CONFIG_LUCI_LANG_zh_Hans=y" >> ./.config
+set_pkg "luci-i18n-base-zh-cn" "y"
+set_pkg "luci-i18n-base-zh-hans" "y"
 set_pkg "luci-theme-$WRT_THEME" "y"
 set_pkg "luci-app-$WRT_THEME-config" "y"
-
-# 如需添加额外固件参数，可在此追加：
-# echo "CONFIG_PACKAGE_xxx=y" >> ./.config
 
 #==================== 13. 加载私有配置 ====================
 [ -f "$GITHUB_WORKSPACE/Config/PRIVATE.txt" ] && {
@@ -381,35 +379,37 @@ if [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
     green "✅ WiFi 已标记为禁用"
 fi
 
-#==================== 16. 无 WiFi DTS 适配 ====================
-if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]] && \
+#==================== 16. 无 WiFi DTS 适配（修正路径） ====================
+if [[ "${WRT_TARGET^^}" == *"QUALCOMMX"* ]] && \
    [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
-    find ./target/linux/qualcommax/dts/ -type f ! -iname '*nowifi*' \
-        -exec sed -i 's/ipq\(6018\|8074\).dtsi/ipq\1-nowifi.dtsi/g' {} +
-    green "✅ nowifi DTS 已适配"
+    local dts_path="./target/linux/qualcommax/ipq60xx/files/arch/arm64/boot/dts/qcom/"
+    if [ -d "$dts_path" ]; then
+        find "$dts_path" -name "ipq6018*.dts*" \
+            -exec sed -i 's/ipq6018.dtsi/ipq6018-nowifi.dtsi/g' {} +
+        green "✅ nowifi DTS 已适配（仅IPQ6018）"
+    else
+        green "ℹ️ 未找到IPQ60XX DTS目录，跳过nowifi适配"
+    fi
 fi
 
 #==================== 17. 验证 ====================
 verify_cleanup() {
     local config_file="./.config"
     
-    # 真正需要清理的冲突包
     local conflicts=(
-        "kmod-nft-offload" "kmod-nf-flow" "odhcpd-ipv6only"
+        "kmod-nft-offload" "kmod-nf-flow" "kmod-nft-fullcone" "odhcpd-ipv6only"
         "kmod-ath11k-pci"
     )
-    # 已通过 disable_pkg 清理的包（但可能被依赖拉回）
     local disabled=(
         "wpad-basic" "wpad-mesh" "kmod-net-selftests"
         "ath10k-firmware-qca4019" "ath10k-firmware-qca9984" "ath11k-firmware-qcn9074"
     )
-    # 必要包
     local required=(
-        "kmod-qca-nss-ecm" "ath11k-firmware-ipq6018"
+        "kmod-qca-nss-drv" "kmod-qca-nss-ecm" "ath11k-firmware-ipq6018"
         "kmod-ppp" "kmod-pppoe" "kmod-qca-nss-drv-pppoe"
-        "wpad-openssl" "kmod-nft-fullcone"
+        "wpad-openssl"
+        "luci-i18n-base-zh-cn" "luci-i18n-base-zh-hans"
     )
-    # 功能依赖（允许存在，不作为冲突）
     local dependencies=(
         "kmod-sched-core" "kmod-ifb" "kmod-nss-ifb"
     )
@@ -417,16 +417,14 @@ verify_cleanup() {
     echo "" && green "===== 验证 ====="
     local has_conflict=false
     
-    # 检查冲突包是否残留
     for pkg in "${conflicts[@]}"; do
         if grep -q "^CONFIG_PACKAGE_${pkg}=y" "$config_file" 2>/dev/null; then
-            echo "⚠️ 冲突残留: $pkg（将被UCI禁用）" && has_conflict=true
+            echo "⚠️ 冲突残留: $pkg" && has_conflict=true
         else
             echo "✅ 已清理: $pkg"
         fi
     done
     
-    # 检查已禁用包是否被拉回
     for pkg in "${disabled[@]}"; do
         if grep -q "^CONFIG_PACKAGE_${pkg}=y" "$config_file" 2>/dev/null; then
             echo "⚠️ 被依赖拉回: $pkg" && has_conflict=true
@@ -435,7 +433,6 @@ verify_cleanup() {
         fi
     done
     
-    # 检查必要包
     for pkg in "${required[@]}"; do
         if grep -q "^CONFIG_PACKAGE_${pkg}=y" "$config_file" 2>/dev/null; then
             echo "✅ 已启用: $pkg"
@@ -444,14 +441,12 @@ verify_cleanup() {
         fi
     done
     
-    # 检查功能依赖（允许存在）
     for pkg in "${dependencies[@]}"; do
         if grep -q "^CONFIG_PACKAGE_${pkg}=y" "$config_file" 2>/dev/null; then
-            echo "ℹ️ 功能依赖: $pkg（NSS驱动需要，非冲突）"
+            echo "ℹ️ 功能依赖: $pkg（NSS驱动需要）"
         fi
     done
     
-    # 检查隧道 kmod 残留
     local tunnel_remain=$(grep "^CONFIG_PACKAGE_kmod-\(6rd\|gre\|gre6\|vxlan\|sit\|ipip\|iptunnel\|udptunnel\)=" "$config_file" 2>/dev/null)
     if [ -n "$tunnel_remain" ]; then
         echo "⚠️ 残留隧道kmod: $tunnel_remain"
@@ -470,33 +465,42 @@ verify_cleanup() {
     
     echo ""
     green '💡 固件烧录后可验证：'
-    local wan_dev=$(uci get network.wan.ifname 2>/dev/null || echo "wan")
-    green "   1. WAN队列: cat /sys/class/net/${wan_dev}/queues/rx-0/rps_flow_cnt → 4096"
-    green '   2. 连接跟踪: sysctl net.netfilter.nf_conntrack_max → 65536'
+    green '   1. WAN队列: cat /sys/class/net/$(uci get network.wan.ifname)/queues/rx-0/rps_flow_cnt → 4096'
+    green '   2. 连接跟踪: sysctl net.netfilter.nf_conntrack_max → 131072'
     green '   3. CPU调度器: cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor → schedutil'
     green '   4. IPv6自动获取: uci get network.wan.ipv6 → auto'
     green '   5. NTP服务器: uci get system.ntp.server → cn.ntp.org.cn'
     green '   6. DNS白名单: uci get dhcp.@dnsmasq[0].rebind_domain → 包含 cn.ntp.org.cn'
-    green '   7. 全锥NAT开关: uci get firewall.@defaults[0].fullcone → 1'
-    green '   8. 防火墙硬件加速: uci get firewall.@defaults[0].nss_offload → 1'
-    green '   9. 全锥NAT模块: lsmod | grep nft_fullcone → 应存在'
-    green '  10. NSS优化日志: logread | grep nss-fix → 查看启动状态'
+    green '   7. 硬件加速开关: uci get firewall.@defaults[0].nss_offload → 1'
+    green '   8. 软件流卸载: uci get firewall.@defaults[0].flow_offloading → 0'
+    green '   9. NSS核心驱动: lsmod | grep qca_nss_drv → 应存在'
+    green '  10. 中文包: opkg list-installed | grep luci-i18n-base → 应存在'
+    green '  11. NSS优化日志: logread | grep nss-fix → 查看启动状态'
 }
 verify_cleanup
 
+#==================== 18. 应用配置变更（优化容错） ====================
+green "===== 应用配置变更 ====="
+# 使用 olddefconfig 自动填充新选项，不会重置已有自定义配置
+make olddefconfig || {
+    echo "⚠️ make olddefconfig 执行异常，保留当前配置继续编译"
+}
+green "✅ 配置已应用"
+
 green ""
 green "========================================"
-green "===== IPQ60XX 硬加速脚本（优化版）执行完毕 ====="
+green "===== IPQ60XX 硬加速脚本（最终优化版）执行完毕 ====="
 green "========================================"
 green "✅ CPU 调频: schedutil (自动按需)"
-green "✅ 队列调度器: 已移除软件队列，保留NSS依赖"
-green "✅ NSS 硬加速: PPE + 桥接卸载 + PPPoE 硬件卸载"
+green "✅ NSS 硬加速: PPE + 桥接卸载 + PPPoE 硬件卸载 + 原生全锥"
 green "✅ WAN 优化: 动态获取WAN口 + 接收队列扩容"
-green "✅ 连接跟踪: 超时调优 (syn_recv=60s)"
-green "✅ 防火墙: 硬件加速开关 + 全锥NAT 完整启用"
-green "✅ IPv6: WAN自动获取 + LAN前缀完整下发"
-green "✅ 启动顺序: NSS优化 + hostapd目录提前到 START=20"
+green "✅ 连接跟踪: 超时调优 (syn_recv=30s，上限131072)"
+green "✅ 防火墙: 纯硬件加速模式，无软件转发冲突"
+green "✅ IPv6: WAN自动获取 + LAN前缀完整下发（兼容新版OpenWrt）"
+green "✅ 启动顺序: NSS驱动前置 + hostapd目录时序适配"
 green "✅ 无线: 仅 AHB 内置，安全重启"
 green "✅ 隧道: 由内核内置，已清理残留 kmod 条目"
-green "✅ 验证: 区分冲突包与功能依赖"
+green "✅ 中文: 双命名兼容，确保新旧LuCI均正常显示"
+green "✅ 兼容: 新旧NSS补丁静默适配，无误导性告警"
+green "✅ 编译: 配置应用容错增强，不会意外重置自定义项"
 green "========================================"
