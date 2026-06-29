@@ -2,25 +2,29 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
 # IPQ60XX 专用优化版 - NSS硬加速 + IPv6服务器模式 + 硬件全锥NAT
-# 最终合并优化版：修复冲突 + 兼容新旧补丁 + 编译稳定性增强
+# 最终修复版：服务自启修复 + 时间戳根源解决 + 全链路稳定性增强
 
 # 定义绿色日志输出函数
 green() {
     echo -e "\033[32m$1\033[0m"
 }
 
+# 从编译根源固定版本时间戳，避免每次编译生成不同的日期后缀
+export SOURCE_DATE_EPOCH=0
+
 #==================== 1. 清理在线升级、全局默认主题替换 ====================
 sed -i "/attendedsysupgrade/d" $(find ./feeds/luci/collections/ -type f -name "Makefile")
 sed -i "s/luci-theme-bootstrap/luci-theme-$WRT_THEME/g" $(find ./feeds/luci/collections/ -type f -name "Makefile")
 sed -i "s/192\.168\.[0-9]*\.[0-9]*/$WRT_IP/g" $(find ./feeds/luci/modules/luci-mod-system/ -type f -name "flash.js")
 
-#==================== 2. 清理固件内置多余编译时间戳 ====================
+#==================== 2. 固件版本号二次清理（兜底） ====================
 clean_version_timestamp() {
     local release="./package/base-files/files/etc/openwrt_release"
+    [ -f "$release" ] || return 0
     sed -i 's|/ [0-9]\{9\}-[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}-[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}||g' "$release" 2>/dev/null || true
     sed -i 's|-[0-9]\{8\}||g' "$release" 2>/dev/null || true
     sed -i 's| [0-9]\{9\}-[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}||g' "$release" 2>/dev/null || true
-    green "✅ 固件版本多余时间戳清理完毕"
+    green "✅ 固件版本时间戳兜底清理完成"
 }
 clean_version_timestamp
 
@@ -133,6 +137,16 @@ exit 0
 EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/96-wifi-config
     green "✅ 96-wifi-config: WiFi参数"
+
+    # 关键修复：启用自定义init服务，确保开机自动执行
+    cat > ./package/base-files/files/etc/uci-defaults/99-enable-init << 'EOF'
+#!/bin/sh
+/etc/init.d/nss-fix enable
+/etc/init.d/hostapd-dir enable
+exit 0
+EOF
+    chmod +x ./package/base-files/files/etc/uci-defaults/99-enable-init
+    green "✅ 99-enable-init: 自定义服务开机自启"
 }
 create_uci_defaults
 
@@ -205,6 +219,10 @@ start() {
         echo 1 > /sys/module/qca_nss_drv/parameters/bridge_offload 2>/dev/null || {
             echo 1 > /sys/module/qca-nss-drv/parameters/bridge_offload 2>/dev/null || logger -t nss-fix "⚠️ 桥接卸载启用失败"
         }
+        # 显式启用ECM原生硬件全锥NAT
+        echo 1 > /sys/module/qca_nss_ecm/parameters/fullcone 2>/dev/null || {
+            echo 1 > /sys/module/qca-nss-ecm/parameters/fullcone 2>/dev/null || true
+        }
 
         # 仅旧版QSDK存在该节点，无节点静默跳过，避免误导告警
         [ -f /proc/sys/net/nss/offload ] && echo 1 > /proc/sys/net/nss/offload 2>/dev/null || true
@@ -234,7 +252,7 @@ start() {
 }
 EOF
     chmod +x "$init_path"
-    green "✅ NSS 修复脚本（START=20，WAN口动态获取）"
+    green "✅ NSS 修复脚本（START=20，WAN口动态获取 + 原生全锥）"
 }
 install_nss_fix
 
@@ -329,6 +347,10 @@ clean_conflict_packages() {
     set_pkg "kmod-pppox" "y"
     set_pkg "kmod-qca-nss-drv-pppoe" "y"
     
+    # 清理无关视频feed依赖警告
+    disable_pkg "libsdl3"
+    disable_pkg "sdl3"
+    
     for pkg in kmod-6rd kmod-gre kmod-gre6 kmod-vxlan kmod-sit kmod-ipip kmod-iptunnel kmod-iptunnel4 kmod-iptunnel6 kmod-udptunnel4 kmod-udptunnel6; do
         sed -i "/^CONFIG_PACKAGE_${pkg}=/d" "$config_file"
     done
@@ -379,17 +401,24 @@ if [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
     green "✅ WiFi 已标记为禁用"
 fi
 
-#==================== 16. 无 WiFi DTS 适配（修正路径） ====================
+#==================== 16. 无 WiFi DTS 适配（双路径兼容） ====================
 if [[ "${WRT_TARGET^^}" == *"QUALCOMMX"* ]] && \
    [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
-    local dts_path="./target/linux/qualcommax/ipq60xx/files/arch/arm64/boot/dts/qcom/"
-    if [ -d "$dts_path" ]; then
-        find "$dts_path" -name "ipq6018*.dts*" \
-            -exec sed -i 's/ipq6018.dtsi/ipq6018-nowifi.dtsi/g' {} +
-        green "✅ nowifi DTS 已适配（仅IPQ6018）"
-    else
-        green "ℹ️ 未找到IPQ60XX DTS目录，跳过nowifi适配"
-    fi
+    local dts_paths=(
+        "./target/linux/qualcommax/ipq60xx/files/arch/arm64/boot/dts/qcom/"
+        "./target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/"
+    )
+    local dts_found=false
+    for dts_path in "${dts_paths[@]}"; do
+        if [ -d "$dts_path" ]; then
+            find "$dts_path" -name "ipq6018*.dts*" \
+                -exec sed -i 's/ipq6018.dtsi/ipq6018-nowifi.dtsi/g' {} +
+            green "✅ nowifi DTS 已适配（路径: $dts_path）"
+            dts_found=true
+            break
+        fi
+    done
+    [ "$dts_found" = false ] && green "ℹ️ 未找到IPQ60XX DTS目录，跳过nowifi适配"
 fi
 
 #==================== 17. 验证 ====================
@@ -403,6 +432,7 @@ verify_cleanup() {
     local disabled=(
         "wpad-basic" "wpad-mesh" "kmod-net-selftests"
         "ath10k-firmware-qca4019" "ath10k-firmware-qca9984" "ath11k-firmware-qcn9074"
+        "libsdl3" "sdl3"
     )
     local required=(
         "kmod-qca-nss-drv" "kmod-qca-nss-ecm" "ath11k-firmware-ipq6018"
@@ -474,22 +504,33 @@ verify_cleanup() {
     green '   7. 硬件加速开关: uci get firewall.@defaults[0].nss_offload → 1'
     green '   8. 软件流卸载: uci get firewall.@defaults[0].flow_offloading → 0'
     green '   9. NSS核心驱动: lsmod | grep qca_nss_drv → 应存在'
-    green '  10. 中文包: opkg list-installed | grep luci-i18n-base → 应存在'
-    green '  11. NSS优化日志: logread | grep nss-fix → 查看启动状态'
+    green '  10. 全锥状态: cat /sys/module/qca_nss_ecm/parameters/fullcone → 1'
+    green '  11. 中文包: opkg list-installed | grep luci-i18n-base → 应存在'
+    green '  12. NSS优化日志: logread | grep nss-fix → 查看启动状态'
 }
 verify_cleanup
 
-#==================== 18. 应用配置变更（优化容错） ====================
+#==================== 18. 应用配置变更（修复CI无终端环境报错） ====================
 green "===== 应用配置变更 ====="
-# 使用 olddefconfig 自动填充新选项，不会重置已有自定义配置
-make olddefconfig || {
-    echo "⚠️ make olddefconfig 执行异常，保留当前配置继续编译"
+# 配置去重，避免重复追加项干扰解析
+awk '!seen[$0]++' .config > .config.tmp && mv .config.tmp .config
+
+# 强制设置哑终端，适配无终端的CI/脚本环境
+export TERM=dumb
+
+# 先尝试 olddefconfig（保留自定义配置，自动填充新选项默认值）
+make olddefconfig 2>&1 | grep -E "error|ERROR" || {
+    # 兜底：用 yes 空输入强制非交互执行 oldconfig
+    echo "ℹ️ olddefconfig 异常，降级为非交互 oldconfig"
+    yes "" | make oldconfig 2>&1 | grep -E "error|ERROR" || {
+        echo "⚠️ 配置应用异常，保留当前自定义配置继续编译"
+    }
 }
 green "✅ 配置已应用"
 
 green ""
 green "========================================"
-green "===== IPQ60XX 硬加速脚本（最终优化版）执行完毕 ====="
+green "===== IPQ60XX 硬加速脚本（最终修复版）执行完毕 ====="
 green "========================================"
 green "✅ CPU 调频: schedutil (自动按需)"
 green "✅ NSS 硬加速: PPE + 桥接卸载 + PPPoE 硬件卸载 + 原生全锥"
@@ -498,9 +539,10 @@ green "✅ 连接跟踪: 超时调优 (syn_recv=30s，上限131072)"
 green "✅ 防火墙: 纯硬件加速模式，无软件转发冲突"
 green "✅ IPv6: WAN自动获取 + LAN前缀完整下发（兼容新版OpenWrt）"
 green "✅ 启动顺序: NSS驱动前置 + hostapd目录时序适配"
+green "✅ 服务自启: 所有自定义优化服务开机自动生效"
 green "✅ 无线: 仅 AHB 内置，安全重启"
 green "✅ 隧道: 由内核内置，已清理残留 kmod 条目"
 green "✅ 中文: 双命名兼容，确保新旧LuCI均正常显示"
 green "✅ 兼容: 新旧NSS补丁静默适配，无误导性告警"
-green "✅ 编译: 配置应用容错增强，不会意外重置自定义项"
+green "✅ 编译: CI无终端环境适配，配置去重稳定不中断"
 green "========================================"
