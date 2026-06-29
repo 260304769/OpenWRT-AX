@@ -378,8 +378,6 @@ set_pkg "luci" "y"
 # 语言选项：兼容新旧版LuCI命名
 sed -i "/^CONFIG_LUCI_LANG_zh_Hans=/d" ./.config
 echo "CONFIG_LUCI_LANG_zh_Hans=y" >> ./.config
-set_pkg "luci-i18n-base-zh-cn" "y"
-set_pkg "luci-i18n-base-zh-hans" "y"
 set_pkg "luci-theme-$WRT_THEME" "y"
 set_pkg "luci-app-$WRT_THEME-config" "y"
 
@@ -510,24 +508,6 @@ verify_cleanup() {
 }
 verify_cleanup
 
-#==================== 18. 应用配置变更（修复CI无终端环境报错） ====================
-green "===== 应用配置变更 ====="
-# 配置去重，避免重复追加项干扰解析
-awk '!seen[$0]++' .config > .config.tmp && mv .config.tmp .config
-
-# 强制设置哑终端，适配无终端的CI/脚本环境
-export TERM=dumb
-
-# 先尝试 olddefconfig（保留自定义配置，自动填充新选项默认值）
-make olddefconfig 2>&1 | grep -E "error|ERROR" || {
-    # 兜底：用 yes 空输入强制非交互执行 oldconfig
-    echo "ℹ️ olddefconfig 异常，降级为非交互 oldconfig"
-    yes "" | make oldconfig 2>&1 | grep -E "error|ERROR" || {
-        echo "⚠️ 配置应用异常，保留当前自定义配置继续编译"
-    }
-}
-green "✅ 配置已应用"
-
 green ""
 green "========================================"
 green "===== IPQ60XX 硬加速脚本（最终修复版）执行完毕 ====="
@@ -544,5 +524,4 @@ green "✅ 无线: 仅 AHB 内置，安全重启"
 green "✅ 隧道: 由内核内置，已清理残留 kmod 条目"
 green "✅ 中文: 双命名兼容，确保新旧LuCI均正常显示"
 green "✅ 兼容: 新旧NSS补丁静默适配，无误导性告警"
-green "✅ 编译: CI无终端环境适配，配置去重稳定不中断"
 green "========================================"
