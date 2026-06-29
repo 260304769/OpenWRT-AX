@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
 # IPQ60XX 专用优化版 - NSS硬加速 + IPv6服务器模式 + 硬件全锥NAT
-# 最终修复版：服务自启修复 + 时间戳根源解决 + 全链路稳定性增强 + WiFi断流修复
+# 最终修复版：服务自启修复 + 时间戳根源解决 + 全链路稳定性增强
 
 # 定义绿色日志输出函数
 green() {
@@ -118,35 +118,25 @@ EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/95-ntp-dns
     green "✅ 95-ntp-dns: NTP国内源+DNS白名单"
 
-    cat > ./package/base-files/files/etc/uci-defaults/96-wifi-config << 'EOF'
+    cat > ./package/base-files/files/etc/uci-defaults/96-wifi-config << EOF
 #!/bin/sh
-for dev in $(uci show wireless | grep '=wifi-device' | cut -d. -f2 | cut -d= -f1); do
-    uci set wireless.$dev.disabled='0'
-    uci set wireless.$dev.country='CN'
-    uci set wireless.$dev.log_level='0'
+for dev in \$(uci show wireless | grep '=wifi-device' | cut -d. -f2 | cut -d= -f1); do
+    uci set wireless.\$dev.disabled='0'
+    uci set wireless.\$dev.country='CN'
+    uci set wireless.\$dev.log_level='0'
 done
 
-for iface in $(uci show wireless | grep '=wifi-iface' | cut -d. -f2 | cut -d= -f1); do
-    uci set wireless.$iface.ssid='$WRT_SSID'
-    uci set wireless.$iface.key='$WRT_WORD'
-    uci set wireless.$iface.encryption='psk2+ccmp'
-done
-
-# ===== WiFi断流修复（边缘信号设备稳定性优化） =====
-# 关闭低ACK踢出机制，避免弱信号设备因ACK丢失被踢下线
-uci set wireless.radio0.disassoc_low_ack='0'
-uci set wireless.radio1.disassoc_low_ack='0'
-
-# 禁用APSD省电模式，强制手机等设备保持唤醒，减少ACK延迟
-for iface in $(uci show wireless | grep '=wifi-iface' | cut -d. -f2); do
-    uci set wireless.$iface.apsd='0'
+for iface in \$(uci show wireless | grep '=wifi-iface' | cut -d. -f2 | cut -d= -f1); do
+    uci set wireless.\$iface.ssid='$WRT_SSID'
+    uci set wireless.\$iface.key='$WRT_WORD'
+    uci set wireless.\$iface.encryption='psk2+ccmp'
 done
 
 uci commit wireless
 exit 0
 EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/96-wifi-config
-    green "✅ 96-wifi-config: WiFi参数 + 断流修复"
+    green "✅ 96-wifi-config: WiFi参数"
 
     # 关键修复：启用自定义init服务，确保开机自动执行
     cat > ./package/base-files/files/etc/uci-defaults/99-enable-init << 'EOF'
@@ -521,7 +511,6 @@ verify_cleanup() {
     green '  10. 全锥状态: cat /sys/module/qca_nss_ecm/parameters/fullcone → 1'
     green '  11. 中文语言: grep CONFIG_LUCI_LANG_zh_Hans /etc/openwrt_release → 应存在'
     green '  12. NSS优化日志: logread | grep nss-fix → 查看启动状态'
-    green '  13. WiFi断流修复: uci get wireless.radio0.disassoc_low_ack → 0，uci get wireless.@wifi-iface[0].apsd → 0'
 }
 verify_cleanup
 
@@ -537,7 +526,7 @@ green "✅ 防火墙: 纯硬件加速模式，无软件转发冲突"
 green "✅ IPv6: WAN自动获取 + LAN前缀完整下发（兼容新版OpenWrt）"
 green "✅ 启动顺序: NSS驱动前置 + hostapd目录时序适配"
 green "✅ 服务自启: 所有自定义优化服务开机自动生效"
-green "✅ 无线: 仅 AHB 内置，安全重启 + 断流修复(disassoc_low_ack=0, apsd=0)"
+green "✅ 无线: 仅 AHB 内置，安全重启"
 green "✅ 隧道: 由内核内置，已清理残留 kmod 条目"
 green "✅ LuCI: 基础LuCI + 中文语言 + 主题($WRT_THEME) + 主题配置"
 green "✅ 兼容: 新旧NSS补丁静默适配，无误导性告警"
