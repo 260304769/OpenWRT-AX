@@ -374,12 +374,11 @@ patch_wifi_full_reload() {
 patch_wifi_full_reload
 
 #==================== 12. 基础编译配置 ====================
-set_pkg "luci" "y"
-# 语言选项：兼容新旧版LuCI命名
-sed -i "/^CONFIG_LUCI_LANG_zh_Hans=/d" ./.config
+# 配置文件修改
+echo "CONFIG_PACKAGE_luci=y" >> ./.config
 echo "CONFIG_LUCI_LANG_zh_Hans=y" >> ./.config
-set_pkg "luci-theme-$WRT_THEME" "y"
-set_pkg "luci-app-$WRT_THEME-config" "y"
+echo "CONFIG_PACKAGE_luci-theme-$WRT_THEME=y" >> ./.config
+echo "CONFIG_PACKAGE_luci-app-$WRT_THEME-config=y" >> ./.config
 
 #==================== 13. 加载私有配置 ====================
 [ -f "$GITHUB_WORKSPACE/Config/PRIVATE.txt" ] && {
@@ -436,7 +435,7 @@ verify_cleanup() {
         "kmod-qca-nss-drv" "kmod-qca-nss-ecm" "ath11k-firmware-ipq6018"
         "kmod-ppp" "kmod-pppoe" "kmod-qca-nss-drv-pppoe"
         "wpad-openssl"
-        "luci-i18n-base-zh-cn" "luci-i18n-base-zh-hans"
+        "luci"
     )
     local dependencies=(
         "kmod-sched-core" "kmod-ifb" "kmod-nss-ifb"
@@ -468,6 +467,13 @@ verify_cleanup() {
             echo "❌ 缺失: $pkg" && has_conflict=true
         fi
     done
+    
+    # 单独检查 CONFIG_LUCI_LANG_zh_Hans（无 CONFIG_PACKAGE_ 前缀）
+    if grep -q "^CONFIG_LUCI_LANG_zh_Hans=y" "$config_file" 2>/dev/null; then
+        echo "✅ 已启用: CONFIG_LUCI_LANG_zh_Hans"
+    else
+        echo "❌ 缺失: CONFIG_LUCI_LANG_zh_Hans" && has_conflict=true
+    fi
     
     for pkg in "${dependencies[@]}"; do
         if grep -q "^CONFIG_PACKAGE_${pkg}=y" "$config_file" 2>/dev/null; then
@@ -503,7 +509,7 @@ verify_cleanup() {
     green '   8. 软件流卸载: uci get firewall.@defaults[0].flow_offloading → 0'
     green '   9. NSS核心驱动: lsmod | grep qca_nss_drv → 应存在'
     green '  10. 全锥状态: cat /sys/module/qca_nss_ecm/parameters/fullcone → 1'
-    green '  11. 中文包: opkg list-installed | grep luci-i18n-base → 应存在'
+    green '  11. 中文语言: grep CONFIG_LUCI_LANG_zh_Hans /etc/openwrt_release → 应存在'
     green '  12. NSS优化日志: logread | grep nss-fix → 查看启动状态'
 }
 verify_cleanup
@@ -522,6 +528,6 @@ green "✅ 启动顺序: NSS驱动前置 + hostapd目录时序适配"
 green "✅ 服务自启: 所有自定义优化服务开机自动生效"
 green "✅ 无线: 仅 AHB 内置，安全重启"
 green "✅ 隧道: 由内核内置，已清理残留 kmod 条目"
-green "✅ 中文: 双命名兼容，确保新旧LuCI均正常显示"
+green "✅ LuCI: 基础LuCI + 中文语言 + 主题($WRT_THEME) + 主题配置"
 green "✅ 兼容: 新旧NSS补丁静默适配，无误导性告警"
 green "========================================"
