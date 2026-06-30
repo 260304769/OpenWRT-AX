@@ -3,7 +3,7 @@
 # Copyright (C) 2026 VIKINGYFY
 # IPQ60XX 专用优化版 - NSS硬加速 + IPv6服务器模式 + 硬件全锥NAT
 # 最终修复版：服务自启修复 + 时间戳根源解决 + 全链路稳定性增强
-# 修复：显式启用 wifi-scripts，修正 apsd 配置写法
+# 修复：显式启用 wifi-scripts，修正 apsd 配置写法，hostapd log_level=1
 
 # 定义绿色日志输出函数
 green() {
@@ -124,7 +124,7 @@ EOF
 for dev in \$(uci show wireless | grep '=wifi-device' | cut -d. -f2 | cut -d= -f1); do
     uci set wireless.\$dev.disabled='0'
     uci set wireless.\$dev.country='CN'
-    uci set wireless.\$dev.log_level='0'
+    uci set wireless.\$dev.log_level='1'   # 优化：屏蔽 AP-STA-POLL-OK 等轮询日志
 done
 
 for iface in \$(uci show wireless | grep '=wifi-iface' | cut -d. -f2 | cut -d= -f1); do
@@ -141,7 +141,7 @@ uci commit wireless
 exit 0
 EOF
     chmod +x ./package/base-files/files/etc/uci-defaults/96-wifi-config
-    green "✅ 96-wifi-config: WiFi参数（含apsd禁用）"
+    green "✅ 96-wifi-config: WiFi参数（含apsd禁用，log_level=1）"
 
     # 关键修复：启用自定义init服务，确保开机自动执行
     cat > ./package/base-files/files/etc/uci-defaults/99-enable-init << 'EOF'
@@ -522,7 +522,8 @@ verify_cleanup() {
     green '   9. NSS核心驱动: lsmod | grep qca_nss_drv → 应存在'
     green '  10. 全锥状态: cat /sys/module/qca_nss_ecm/parameters/fullcone → 1'
     green '  11. 无线脚本: ls -l /etc/init.d/wifi → 应存在'
-    green '  12. NSS优化日志: logread | grep nss-fix → 查看启动状态'
+    green '  12. hostapd日志级别: uci get wireless.radio0.log_level → 1'
+    green '  13. NSS优化日志: logread | grep nss-fix → 查看启动状态'
 }
 verify_cleanup
 
@@ -541,5 +542,6 @@ green "✅ 服务自启: 所有自定义优化服务开机自动生效"
 green "✅ 无线: 仅 AHB 内置，安全重启，无线脚本完整"
 green "✅ 隧道: 由内核内置，已清理残留 kmod 条目"
 green "✅ LuCI: 基础LuCI + 中文语言 + 主题($WRT_THEME) + 主题配置"
+green "✅ 日志: hostapd log_level=1，屏蔽 AP-STA-POLL-OK 刷屏"
 green "✅ 兼容: 新旧NSS补丁静默适配，无误导性告警"
 green "========================================"
